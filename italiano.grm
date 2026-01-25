@@ -1,0 +1,25 @@
+(* 
+   Polygen Italian Example Grammar
+   Genera frasi casuali in italiano
+*)
+
+I ::= "Generatore di frasi italiane v1.0 - by Polygen Python" ;
+
+S ::= \ Frase ^ "." ;
+
+Frase ::= Soggetto Verbo [Complemento] ;
+
+Soggetto ::= Articolo [Aggettivo] Sostantivo ;
+
+Sostantivo ::= gatto | cane | bambino | libro | casa | giardino ;
+
+Articolo ::= il | la | lo | un | una ;
+
+Aggettivo ::= piccolo | grande | vecchio | giovane | bello ;
+
+Verbo ::= mangia | corre | dorme | legge | guarda | ama ;
+
+Complemento ::= 
+    (nel | nella | sul | sulla) (giardino | cucina | strada | piazza) |
+    con (amore | gioia | tristezza | energia) |
+    molto (velocemente | lentamente | attentamente) ;

@@ -1,0 +1,46 @@
+(* 
+   Fortune Cookie Generator
+   A Polygen grammar for generating fortune cookie messages
+*)
+
+I ::= "Fortune Cookie Generator - A Polygen Python Example" ;
+
+S ::= \ Fortune ^ "." ;
+
+Fortune ::= 
+    Wisdom |
+    Prediction |
+    Advice ;
+
+Wisdom ::= 
+    (a | the) Adjective Noun is (worth | like) Number Nouns |
+    he who Verbs will (find | discover | achieve) Reward |
+    (patience | wisdom | courage | kindness) is the (key | path | secret) to Success ;
+
+Prediction ::= 
+    (soon | today | tomorrow) you will (meet | find | receive) Something Wonderful |
+    a Adjective (stranger | friend | opportunity) will (change | improve | bless) your (life | day | week) |
+    (good | great | unexpected) (news | fortune | luck) is (coming | approaching | near) ;
+
+Advice ::= 
+    (embrace | seek | follow) your (dreams | heart | instincts) |
+    (never | always) (forget | remember) to (smile | laugh | love) |
+    (let go | hold on) of what (matters | you love) (most | deeply) ;
+
+Adjective ::= wise | humble | brave | kind | gentle | mysterious | fortunate ;
+
+Noun ::= word | deed | thought | friend | action | moment ;
+
+Nouns ::= words | deeds | thoughts | friends | actions | moments ;
+
+Verbs ::= waits | believes | perseveres | hopes | works | dreams ;
+
+Number ::= a thousand | a hundred | ten | many | countless ;
+
+Reward ::= happiness | success | peace | love | wisdom | prosperity ;
+
+Success ::= happiness | success | enlightenment | peace | fulfillment ;
+
+Something ::= something | someone | a gift | an answer | a sign ;
+
+Wonderful ::= wonderful | amazing | unexpected | "life-changing" | inspiring ;
