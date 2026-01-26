@@ -32,7 +32,7 @@ class TokenType(Enum):
     TERM = auto()           # lowercase word or quoted string
     NONTERM = auto()        # Capitalized identifier
     LABEL = auto()          # label identifier (after colon or dot)
-    
+
     # Operators
     DEFINE = auto()         # ::=
     ASSIGN = auto()         # :=
@@ -48,7 +48,7 @@ class TokenType(Enum):
     MINUS = auto()          # -
     GT = auto()             # >
     LT = auto()             # <
-    
+
     # Brackets
     LPAREN = auto()         # (
     RPAREN = auto()         # )
@@ -58,10 +58,10 @@ class TokenType(Enum):
     RBRACE = auto()         # }
     DEEPOPEN = auto()       # >>
     DEEPCLOSE = auto()      # <<
-    
+
     # Special
     EOF = auto()
-    
+
 
 @dataclass
 class Token:
@@ -84,13 +84,13 @@ class Lexer:
         self.pos = 0
         self.line = 1
         self.col = 1
-        
+
     def peek(self, offset: int = 0) -> str:
         pos = self.pos + offset
         if pos < len(self.text):
             return self.text[pos]
         return ''
-    
+
     def advance(self) -> str:
         ch = self.peek()
         self.pos += 1
@@ -100,11 +100,11 @@ class Lexer:
         else:
             self.col += 1
         return ch
-    
+
     def skip_whitespace(self):
         while self.peek() and self.peek() in ' \t\n\r':
             self.advance()
-    
+
     def skip_comment(self) -> bool:
         """Skip (* ... *) comments. Returns True if a comment was skipped."""
         if self.peek() == '(' and self.peek(1) == '*':
@@ -118,7 +118,7 @@ class Lexer:
                 self.advance()
             raise LexerError("Unterminated comment", self.line, self.col)
         return False
-    
+
     def read_quoted_string(self) -> str:
         """Read a quoted string, handling escape sequences."""
         self.advance()  # opening quote
@@ -153,34 +153,34 @@ class Lexer:
             raise LexerError("Unterminated string", self.line, self.col)
         self.advance()  # closing quote
         return ''.join(result)
-    
+
     def read_identifier(self) -> Tuple[str, bool]:
         """Read an identifier. Returns (value, is_nonterm)."""
         result = []
         first_char = self.peek()
         is_nonterm = first_char.isupper()
-        
+
         while self.peek() and (self.peek().isalnum() or self.peek() == "'"):
             result.append(self.advance())
-        
+
         return ''.join(result), is_nonterm
-    
+
     def tokenize(self) -> List[Token]:
         tokens = []
-        
+
         while self.pos < len(self.text):
             self.skip_whitespace()
-            
+
             # Skip comments
             while self.skip_comment():
                 self.skip_whitespace()
-            
+
             if self.pos >= len(self.text):
                 break
-            
+
             line, col = self.line, self.col
             ch = self.peek()
-            
+
             # Two-character tokens
             if ch == ':' and self.peek(1) == ':' and self.peek(2) == '=':
                 tokens.append(Token(TokenType.DEFINE, '::=', line, col))
@@ -266,7 +266,7 @@ class Lexer:
                 tokens.append(Token(TokenType.TERM, value, line, col))
             else:
                 raise LexerError(f"Illegal character: {ch!r}", line, col)
-        
+
         tokens.append(Token(TokenType.EOF, '', self.line, self.col))
         return tokens
 
@@ -288,7 +288,7 @@ class Terminal(ASTNode):
 @dataclass
 class NonTerminal(ASTNode):
     name: str
-    
+
 
 @dataclass
 class Epsilon(ASTNode):
@@ -301,7 +301,7 @@ class Concat(ASTNode):
     pass
 
 
-@dataclass 
+@dataclass
 class Capitalize(ASTNode):
     """Capitalization marker - capitalizes next terminal."""
     pass
@@ -376,34 +376,34 @@ class Parser:
     def __init__(self, tokens: List[Token]):
         self.tokens = tokens
         self.pos = 0
-    
+
     def peek(self, offset: int = 0) -> Token:
         pos = self.pos + offset
         if pos < len(self.tokens):
             return self.tokens[pos]
         return self.tokens[-1]  # EOF
-    
+
     def advance(self) -> Token:
         token = self.peek()
         if self.pos < len(self.tokens) - 1:
             self.pos += 1
         return token
-    
+
     def expect(self, type_: TokenType) -> Token:
         token = self.peek()
         if token.type != type_:
             raise ParserError(f"Expected {type_.name}, got {token.type.name}", token)
         return self.advance()
-    
+
     def match(self, *types: TokenType) -> bool:
         return self.peek().type in types
-    
+
     def parse(self) -> Grammar:
         """Parse the complete grammar."""
         declarations = self.parse_declarations()
         self.expect(TokenType.EOF)
         return Grammar(declarations)
-    
+
     def parse_declarations(self) -> List[Declaration]:
         """Parse a series of declarations separated by semicolons."""
         declarations = []
@@ -412,12 +412,12 @@ class Parser:
             declarations.append(decl)
             self.expect(TokenType.SEMI)
         return declarations
-    
+
     def parse_declaration(self) -> Declaration:
         """Parse a single declaration: Nonterm ::= | := Productions"""
         name_token = self.expect(TokenType.NONTERM)
         name = name_token.value
-        
+
         is_strong = False
         if self.match(TokenType.DEFINE):
             self.advance()
@@ -426,10 +426,10 @@ class Parser:
             is_strong = True
         else:
             raise ParserError("Expected ::= or :=", self.peek())
-        
+
         productions = self.parse_productions()
         return Declaration(name, productions, is_strong)
-    
+
     def parse_productions(self) -> Productions:
         """Parse pipe-separated productions."""
         items = [self.parse_production()]
@@ -437,7 +437,7 @@ class Parser:
             self.advance()
             items.append(self.parse_production())
         return Productions(items)
-    
+
     def parse_production(self) -> Production:
         """Parse a single production with optional +/- weight modifiers."""
         weight = 0
@@ -446,32 +446,32 @@ class Parser:
                 weight += 1
             else:
                 weight -= 1
-        
+
         sequence = self.parse_sequence()
         return Production(sequence, weight)
-    
+
     def parse_sequence(self) -> Sequence:
         """Parse a sequence of atoms, optionally labeled."""
         label = None
         atoms = []
-        
+
         # Check for label: prefix
         if self.match(TokenType.NONTERM, TokenType.TERM):
             # Lookahead to check if this is a label
             if self.peek(1).type == TokenType.COLON:
                 label = self.advance().value
                 self.advance()  # consume :
-        
+
         # Parse atoms
         while self._is_atom_start():
             atom = self.parse_atom()
             atoms.append(atom)
-            
+
             # Handle comma-separated positional generation
             # (simplified: treat as alternatives within atom)
-        
+
         return Sequence(atoms, label)
-    
+
     def _is_atom_start(self) -> bool:
         """Check if current token can start an atom."""
         return self.match(
@@ -480,11 +480,11 @@ class Parser:
             TokenType.LPAREN, TokenType.LBRACKET, TokenType.LBRACE,
             TokenType.DEEPOPEN, TokenType.GT, TokenType.LT
         )
-    
+
     def parse_atom(self) -> ASTNode:
         """Parse a single atom."""
         token = self.peek()
-        
+
         # Unfold prefix
         unfold = False
         fold = False
@@ -494,9 +494,9 @@ class Parser:
         elif self.match(TokenType.LT):
             self.advance()
             fold = True
-        
+
         atom = None
-        
+
         if self.match(TokenType.TERM):
             atom = Terminal(self.advance().value)
         elif self.match(TokenType.NONTERM):
@@ -542,12 +542,12 @@ class Parser:
             atom = SubProduction(productions, declarations, is_deep_unfold=True)
         else:
             raise ParserError(f"Unexpected token: {token.type.name}", token)
-        
-        # Handle iteration suffix: (...)+ 
+
+        # Handle iteration suffix: (...)+
         if isinstance(atom, SubProduction) and self.match(TokenType.PLUS):
             self.advance()
             atom.is_iterable = True
-        
+
         # Handle selection suffix: .label or .
         while self.match(TokenType.DOT):
             self.advance()
@@ -564,9 +564,9 @@ class Parser:
             else:
                 # Just . (selection reset)
                 atom = Selection(atom, [], reset=True)
-        
+
         return atom
-    
+
     def parse_label_list(self) -> List[Tuple[str, int]]:
         """Parse a list of labels with optional weights: (+l1|-l2|l3)"""
         labels = []
@@ -577,27 +577,27 @@ class Parser:
                     weight += 1
                 else:
                     weight -= 1
-            
+
             if self.match(TokenType.NONTERM, TokenType.TERM):
                 labels.append((self.advance().value, weight))
-            
+
             if not self.match(TokenType.PIPE):
                 break
             self.advance()
-        
+
         return labels
-    
+
     def parse_subproduction(self, open_type: TokenType, close_type: TokenType) -> SubProduction:
         """Parse a subproduction within brackets."""
         self.expect(open_type)
         declarations, productions = self.parse_sub_content()
         self.expect(close_type)
         return SubProduction(productions, declarations)
-    
+
     def parse_sub_content(self) -> Tuple[List[Declaration], Productions]:
         """Parse the content of a subproduction (optional declarations + productions)."""
         declarations = []
-        
+
         # Check for local declarations
         while self.match(TokenType.NONTERM):
             # Lookahead to check if this is a declaration
@@ -607,7 +607,7 @@ class Parser:
                 self.expect(TokenType.SEMI)
             else:
                 break
-        
+
         productions = self.parse_productions()
         return declarations, productions
 
@@ -629,27 +629,27 @@ class Environment:
     # name -> cached result (for strong bindings)
     parent: Optional['Environment'] = None
     active_labels: Set[str] = field(default_factory=set)
-    
+
     def bind(self, name: str, productions: Productions, is_strong: bool):
         self.bindings[name] = (productions, is_strong, self)
-    
+
     def lookup(self, name: str) -> Optional[Tuple[Productions, bool, 'Environment']]:
         if name in self.bindings:
             return self.bindings[name]
         if self.parent:
             return self.parent.lookup(name)
         return None
-    
+
     def get_suspension(self, name: str) -> Optional[List[str]]:
         if name in self.suspensions:
             return self.suspensions[name]
         if self.parent:
             return self.parent.get_suspension(name)
         return None
-    
+
     def set_suspension(self, name: str, value: List[str]):
         self.suspensions[name] = value
-    
+
     def child(self, labels: Optional[Set[str]] = None) -> 'Environment':
         """Create a child environment."""
         new_labels = labels if labels is not None else self.active_labels.copy()
@@ -661,24 +661,24 @@ class Generator:
         self.grammar = grammar
         self.max_recursion = max_recursion
         self.recursion_depth = 0
-    
+
     def generate(self, start_symbol: str = 'S') -> str:
         """Generate a random string starting from the given symbol."""
         # Build top-level environment
         env = Environment()
         for decl in self.grammar.declarations:
             env.bind(decl.name, decl.productions, decl.is_strong)
-        
+
         # Generate from start symbol
         result = self.generate_nonterm(start_symbol, env)
         return self._format_output(result)
-    
+
     def _format_output(self, tokens: List[str]) -> str:
         """Format the token list into a final string."""
         result = []
         concat_next = False
         capitalize_next = False
-        
+
         for token in tokens:
             if token == '\x00':  # Concat marker
                 concat_next = True
@@ -688,45 +688,45 @@ class Generator:
                 if capitalize_next:
                     token = token[0].upper() + token[1:] if token else token
                     capitalize_next = False
-                
+
                 if result and not concat_next:
                     result.append(' ')
                 result.append(token)
                 concat_next = False
-        
+
         return ''.join(result).strip()
-    
+
     def generate_nonterm(self, name: str, env: Environment) -> List[str]:
         """Generate from a non-terminal symbol."""
         self.recursion_depth += 1
         if self.recursion_depth > self.max_recursion:
             raise GeneratorError(f"Maximum recursion depth exceeded for symbol {name}")
-        
+
         try:
             binding = env.lookup(name)
             if binding is None:
                 raise GeneratorError(f"Undefined symbol: {name}")
-            
+
             productions, is_strong, closure_env = binding
-            
+
             # Check for suspension (strong binding with cached value)
             if is_strong:
                 cached = env.get_suspension(name)
                 if cached is not None:
                     return cached
-            
+
             # Generate in closure environment with current labels
             gen_env = closure_env.child(env.active_labels)
             result = self.generate_productions(productions, gen_env)
-            
+
             # Cache result for strong binding
             if is_strong:
                 env.set_suspension(name, result)
-            
+
             return result
         finally:
             self.recursion_depth -= 1
-    
+
     def generate_productions(self, productions: Productions, env: Environment) -> List[str]:
         """Generate from a set of productions."""
         # Filter productions by active labels
@@ -735,10 +735,10 @@ class Generator:
             seq = prod.sequence
             if seq.label is None or seq.label in env.active_labels or not env.active_labels:
                 valid_prods.append(prod)
-        
+
         if not valid_prods:
             return []  # All filtered out (destructive selection)
-        
+
         # Calculate weights
         weights = []
         min_weight = min(p.weight for p in valid_prods)
@@ -746,7 +746,7 @@ class Generator:
             # Normalize: shift so minimum is 1
             w = prod.weight - min_weight + 1
             weights.append(w)
-        
+
         # Weighted random choice
         total = sum(weights)
         r = random.randint(1, total)
@@ -757,53 +757,53 @@ class Generator:
             if r <= cumulative:
                 chosen = prod
                 break
-        
+
         return self.generate_sequence(chosen.sequence, env)
-    
+
     def generate_sequence(self, sequence: Sequence, env: Environment) -> List[str]:
         """Generate from a sequence of atoms."""
         result = []
         for atom in sequence.atoms:
             result.extend(self.generate_atom(atom, env))
         return result
-    
+
     def generate_atom(self, atom: ASTNode, env: Environment) -> List[str]:
         """Generate from a single atom."""
         if isinstance(atom, Terminal):
             return [atom.value]
-        
+
         elif isinstance(atom, NonTerminal):
             return self.generate_nonterm(atom.name, env)
-        
+
         elif isinstance(atom, Epsilon):
             return []
-        
+
         elif isinstance(atom, Concat):
             return ['\x00']  # Special concat marker
-        
+
         elif isinstance(atom, Capitalize):
             return ['\x01']  # Special capitalize marker
-        
+
         elif isinstance(atom, SubProduction):
             return self.generate_subproduction(atom, env)
-        
+
         elif isinstance(atom, Selection):
             return self.generate_selection(atom, env)
-        
+
         else:
             raise GeneratorError(f"Unknown atom type: {type(atom)}")
-    
+
     def generate_subproduction(self, sub: SubProduction, env: Environment) -> List[str]:
         """Generate from a subproduction."""
         # Handle optional: 50% chance of epsilon
         if sub.is_optional and random.random() < 0.5:
             return []
-        
+
         # Create local environment with declarations
         local_env = env.child()
         for decl in sub.declarations:
             local_env.bind(decl.name, decl.productions, decl.is_strong)
-        
+
         # Handle iteration
         if sub.is_iterable:
             result = []
@@ -813,17 +813,17 @@ class Generator:
             while random.random() < 0.5:
                 result.extend(self.generate_productions(sub.productions, local_env))
             return result
-        
+
         # Normal generation
         return self.generate_productions(sub.productions, local_env)
-    
+
     def generate_selection(self, sel: Selection, env: Environment) -> List[str]:
         """Generate from a selection."""
         if sel.reset:
             # Reset selection: clear active labels
             new_env = env.child(set())
             return self.generate_atom(sel.atom, new_env)
-        
+
         if sel.labels:
             # Calculate weighted label selection
             weights = []
@@ -831,7 +831,7 @@ class Generator:
             for label, weight in sel.labels:
                 w = weight - min_weight + 1
                 weights.append(w)
-            
+
             # Weighted random choice of label
             total = sum(weights)
             r = random.randint(1, total)
@@ -842,12 +842,12 @@ class Generator:
                 if r <= cumulative:
                     chosen_label = label
                     break
-            
+
             # Add label to active set
             new_labels = env.active_labels | {chosen_label}
             new_env = env.child(new_labels)
             return self.generate_atom(sel.atom, new_env)
-        
+
         return self.generate_atom(sel.atom, env)
 
 
@@ -857,43 +857,43 @@ class Generator:
 
 class Polygen:
     """Main Polygen class for parsing and generating from grammars."""
-    
+
     def __init__(self, source: str):
         """
         Initialize Polygen with a grammar source.
-        
+
         Args:
             source: The PML grammar source code
         """
         self.source = source
         self.grammar = None
         self._parse()
-    
+
     def _parse(self):
         """Parse the grammar source."""
         lexer = Lexer(self.source)
         tokens = lexer.tokenize()
         parser = Parser(tokens)
         self.grammar = parser.parse()
-    
+
     def generate(self, start_symbol: str = 'S', max_recursion: int = 100) -> str:
         """
         Generate a random string from the grammar.
-        
+
         Args:
             start_symbol: The non-terminal symbol to start from (default: 'S')
             max_recursion: Maximum recursion depth (default: 100)
-            
+
         Returns:
             The generated string
         """
         generator = Generator(self.grammar, max_recursion)
         return generator.generate(start_symbol)
-    
+
     def info(self) -> str:
         """
         Get the grammar info (generates from 'I' symbol if defined).
-        
+
         Returns:
             The info string, or empty if 'I' is not defined
         """
@@ -901,15 +901,15 @@ class Polygen:
             return self.generate('I')
         except GeneratorError:
             return ""
-    
+
     @classmethod
     def from_file(cls, path: str) -> 'Polygen':
         """
         Load a grammar from a file.
-        
+
         Args:
             path: Path to the grammar file
-            
+
         Returns:
             A Polygen instance
         """
@@ -921,7 +921,7 @@ def main():
     """Command-line interface."""
     import sys
     import argparse
-    
+
     parser = argparse.ArgumentParser(
         description='Polygen - Random text generator from grammars'
     )
@@ -934,16 +934,16 @@ def main():
                        help='Show grammar info')
     parser.add_argument('-S', '--seed', type=int,
                        help='Random seed for reproducibility')
-    
+
     args = parser.parse_args()
-    
+
     if args.seed is not None:
         random.seed(args.seed)
-    
+
     if args.file:
         try:
             pg = Polygen.from_file(args.file)
-            
+
             if args.info:
                 info = pg.info()
                 if info:
@@ -953,7 +953,7 @@ def main():
             else:
                 for _ in range(args.count):
                     print(pg.generate(args.start))
-                    
+
         except (LexerError, ParserError, GeneratorError) as e:
             print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
@@ -974,7 +974,7 @@ Fruit ::= an apple | a mango | an orange ;
         print(demo_grammar)
         print("Generated sentences:")
         print("-" * 40)
-        
+
         pg = Polygen(demo_grammar)
         for _ in range(5):
             print(pg.generate())
