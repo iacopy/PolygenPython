@@ -4,7 +4,14 @@ Tests the main features based on examples from the PML specification.
 """
 
 import random
+import pytest
+
 from polygen import Polygen, Lexer, Parser, LexerError, ParserError, GeneratorError
+
+
+@pytest.fixture
+def seeded_gen():
+    random.seed(42)
 
 
 def test_basic_grammar():
@@ -20,12 +27,17 @@ def test_basic_grammar():
     pg = Polygen(grammar)
     print("Grammar:", grammar.strip())
     print("\nGenerated (10x):")
+    generations = set()
     for _ in range(10):
-        print(f"  {pg.generate()}")
+        gen = pg.generate()
+        generations.add(gen)
+        print(f"  {gen}")
     print()
+    # dovrebbeero essere state generate tutte e 3 le opzioni
+    generations == {"an apple", "a mango", "an orange"}
 
 
-def test_nonterminal_references():
+def test_nonterminal_references(seeded_gen):
     """Test grammar with non-terminal references."""
     print("=" * 60)
     print("TEST: Non-terminal references")
@@ -40,9 +52,18 @@ def test_nonterminal_references():
     pg = Polygen(grammar)
     print("Grammar:", grammar.strip())
     print("\nGenerated (10x):")
+    generations = set()
     for _ in range(10):
-        print(f"  {pg.generate()}")
+        gen = pg.generate()
+        generations.add(gen)
+        print(f"  {gen}")
     print()
+    assert generations == {
+        "the cat is eating an apple",
+        "the cat is eating a mango",
+        "the dog is eating an apple",
+        "the dog is eating a mango",
+    }
 
 
 def test_quoted_terminals():
