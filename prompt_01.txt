@@ -1,0 +1,2 @@
+Mi sembra che tu abbia fatto un ottimo lavoro, tutto sembra funzionare bene.
+Continua pure con implementare le altre funzionalità mancanti, senza ovviamente rompere quelle esistenti. Se riesci a farle tutte in una volta sola bene, altrimenti procedi pure per step nel modo che ti è più congeniale, efficace.
