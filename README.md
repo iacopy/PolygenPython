@@ -1,21 +1,13 @@
 # Polygen Python
 
 Un'implementazione in Python di [Polygen](http://polygen.org), il generatore di testo casuale basato su grammatiche.
-
-È stato generato con Claude 4.5 Opus, con il prompt indicato suil file `prompt.txt`.
-In pratica il prompt era:
-```
-Implementa il Polygen in Python, per lo meno le feature principali.
-Ecco le specifiche:
-<codice html>
-```
-Dove `<codice html>` è il codice presente a https://github.com/alvisespano/Polygen/blob/master/docs/polygen-spec_EN.html>
-
-dalla riga `<html lang="en">` fino alla fine (quindi escluso il <!DOCTYPE html> e il commento della licenza).
+Con l'ausilio di Claude 4.5 Opus.
 
 ## Caratteristiche implementate
 
-Questa implementazione supporta le seguenti feature del linguaggio PML (Polygen Meta Language):
+Questa implementazione supporta tutte le feature principali del linguaggio PML (Polygen Meta Language):
+
+### Feature base
 
 - ✅ Simboli terminali e non-terminali
 - ✅ Produzioni con alternative separate da pipe (`|`)
@@ -24,22 +16,32 @@ Questa implementazione supporta le seguenti feature del linguaggio PML (Polygen 
 - ✅ Concatenazione (`^`) per sopprimere gli spazi
 - ✅ Epsilon (`_`) per produzioni vuote
 - ✅ Modificatori di probabilità (`+` e `-`)
-- ✅ Label e selezione (`.label`)
 - ✅ Capitalizzazione (`\`)
 - ✅ Commenti `(* ... *)`
+
+### Label e selezione
+
+- ✅ Label sulle produzioni (`label: production`)
+- ✅ Selezione singola (`.label`)
+- ✅ Selezione multipla con pesi `.(+l1|-l2|l3)`
+- ✅ Reset selezione (`.`)
+
+### Binding e scoping
+
 - ✅ Binding debole `::=` (closure)
 - ✅ Binding forte `:=` (suspension/assignment)
 - ✅ Scoping locale con dichiarazioni nelle subproduzioni
-- ✅ Iterazione `(...)+`
 - ✅ Ricorsione
 
-### Feature non ancora implementate
+### Feature avanzate
 
-- ❌ Unfolding completo (`>` e `>>...<<`)
-- ❌ Folding (`<`)
-- ❌ Permutazione `{...}`
-- ❌ Generazione posizionale (`,`)
-- ❌ Selezione multipla con pesi `.( +l1 | -l2 )`
+- ✅ Iterazione `(...)+`
+- ✅ Permutazione `{...}`
+- ✅ Generazione posizionale (`,`)
+- ✅ Unfolding di subproduzioni `>(...)`
+- ✅ Unfolding di non-terminali `>Symbol`
+- ✅ Deep unfolding `>>...<<`
+- ✅ Folding `<` (previene unfolding in deep unfold)
 
 ## Installazione
 
@@ -190,6 +192,57 @@ S ::= very (much ^ )+ better ;
 (* "very much better", "very muchmuch better", etc. *)
 ```
 
+### Permutazione
+
+```polygen
+(* Gli elementi tra {} vengono permutati casualmente *)
+S ::= whether {is} {therefore} {he} ;
+(* Genera tutte le permutazioni: "whether is therefore he", 
+   "whether therefore is he", etc. *)
+```
+
+### Generazione posizionale
+
+```polygen
+(* Elementi separati da virgola generano alternative sincronizzate *)
+S ::= time,fruit flies like an,a arrow,banana ;
+(* Produce: "time flies like an arrow" OPPURE "fruit flies like a banana" *)
+
+(* Utile per concordanza di genere *)
+S ::= he,she is a handsome,pretty act ^ or,ress ;
+(* "he is a handsome actor" OPPURE "she is a pretty actress" *)
+```
+
+### Unfolding
+
+```polygen
+(* > appiattisce le probabilità di una subproduzione *)
+S ::= >(walk | pass) through | look at | >(go | come | move) to ;
+(* Ogni verbo ha la stessa probabilità invece di essere raggruppato *)
+
+(* > può unfoldare anche non-terminali *)
+S ::= ugly cat | nice >Dog ;
+Dog ::= poodle | beagle | terrier ;
+(* Ogni opzione (ugly cat, nice poodle, nice beagle, nice terrier) ha 1/4 *)
+
+(* >> ... << applica unfolding ricorsivo a tutto il contenuto *)
+S ::= >> the (dog | (big | small) cat) | a (cow | Animal) << ;
+(* Tutto viene appiattito *)
+
+(* < previene l'unfolding dentro >> << *)
+S ::= >> a (cow | <Animal) << ;
+(* Animal resta raggruppato *)
+```
+
+### Selezione multipla con pesi
+
+```polygen
+(* Selezione di label multiple con probabilità diverse *)
+S ::= Animal.(+big|--small) ;
+Animal ::= big: elephant | big: whale | small: ant | small: bee ;
+(* big è molto più probabile di small *)
+```
+
 ## Esempi
 
 Vedi la directory `examples/` per grammatiche di esempio:
@@ -197,10 +250,6 @@ Vedi la directory `examples/` per grammatiche di esempio:
 - `italiano.grm` - Generatore di frasi italiane semplici
 - `italiano_avanzato.grm` - Con concordanza di genere
 - `fortune.grm` - Generatore di fortune cookie
-
-## Licenza
-
-MIT License
 
 ## Credits
 

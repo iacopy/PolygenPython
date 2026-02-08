@@ -349,6 +349,12 @@ class Selection(ASTNode):
 
 
 @dataclass
+class PositionalGroup(ASTNode):
+    """Group of comma-separated atoms for positional generation."""
+    atoms: List[ASTNode]
+
+
+@dataclass
 class Declaration(ASTNode):
     """A binding declaration."""
     name: str
@@ -462,13 +468,23 @@ class Parser:
                 label = self.advance().value
                 self.advance()  # consume :
 
-        # Parse atoms
+        # Parse atoms (possibly with comma groups)
         while self._is_atom_start():
             atom = self.parse_atom()
-            atoms.append(atom)
 
-            # Handle comma-separated positional generation
-            # (simplified: treat as alternatives within atom)
+            # Check for comma-separated positional generation
+            if self.match(TokenType.COMMA):
+                group_atoms = [atom]
+                while self.match(TokenType.COMMA):
+                    self.advance()  # consume ,
+                    if self._is_atom_start():
+                        group_atoms.append(self.parse_atom())
+                    else:
+                        break
+                if len(group_atoms) > 1:
+                    atom = PositionalGroup(group_atoms)
+
+            atoms.append(atom)
 
         return Sequence(atoms, label)
 
@@ -610,6 +626,165 @@ class Parser:
 
         productions = self.parse_productions()
         return declarations, productions
+
+
+class Preprocessor:
+    """Preprocesses the AST to handle syntactic transformations."""
+
+    def __init__(self):
+        self.declarations = {}  # name -> Declaration (for unfolding lookups)
+
+    def process(self, grammar: Grammar) -> Grammar:
+        """Process the grammar, expanding positional generation and unfolding."""
+        # First pass: collect all declarations for lookup
+        for decl in grammar.declarations:
+            self.declarations[decl.name] = decl
+
+        # Second pass: process declarations
+        new_declarations = []
+        for decl in grammar.declarations:
+            new_prods = self.process_productions(decl.productions, in_deep_unfold=False)
+            new_declarations.append(Declaration(decl.name, new_prods, decl.is_strong))
+
+        return Grammar(new_declarations)
+
+    def process_productions(self, prods: Productions, in_deep_unfold: bool = False) -> Productions:
+        """Process productions, expanding positional groups and unfolding."""
+        new_items = []
+        for prod in prods.items:
+            expanded = self.expand_production(prod, in_deep_unfold)
+            new_items.extend(expanded)
+        return Productions(new_items)
+
+    def expand_production(self, prod: Production, in_deep_unfold: bool) -> List[Production]:
+        """Expand a production, handling positional groups and unfolding."""
+        seq = prod.sequence
+        atoms = seq.atoms
+
+        # First expand positional groups
+        positional_expanded = self.expand_positional_in_sequence(atoms, seq.label, prod.weight, in_deep_unfold)
+
+        # Then handle unfolding for each resulting production
+        final_result = []
+        for p in positional_expanded:
+            unfolded = self.expand_unfolding_in_production(p, in_deep_unfold)
+            final_result.extend(unfolded)
+
+        return final_result
+
+    def expand_positional_in_sequence(self, atoms: List[ASTNode], label: Optional[str],
+                                       weight: int, in_deep_unfold: bool) -> List[Production]:
+        """Expand positional groups in a sequence."""
+        # Find all positional groups
+        groups = [(i, atom) for i, atom in enumerate(atoms) if isinstance(atom, PositionalGroup)]
+
+        if not groups:
+            # No positional groups, process atoms and return as single production
+            new_atoms = [self.process_atom(a, in_deep_unfold) for a in atoms]
+            return [Production(Sequence(new_atoms, label), weight)]
+
+        # Check all groups have same size
+        group_size = len(groups[0][1].atoms)
+        for idx, group in groups:
+            if len(group.atoms) != group_size:
+                raise GeneratorError(
+                    f"Positional groups must have same size: expected {group_size}, got {len(group.atoms)}"
+                )
+
+        # Expand into group_size productions
+        result = []
+        for pos in range(group_size):
+            new_atoms = []
+            for i, atom in enumerate(atoms):
+                if isinstance(atom, PositionalGroup):
+                    new_atoms.append(self.process_atom(atom.atoms[pos], in_deep_unfold))
+                else:
+                    new_atoms.append(self.process_atom(atom, in_deep_unfold))
+            result.append(Production(Sequence(new_atoms, label), weight))
+
+        return result
+
+    def expand_unfolding_in_production(self, prod: Production, in_deep_unfold: bool) -> List[Production]:
+        """Expand unfolding operators in a production, flattening productions."""
+        seq = prod.sequence
+        atoms = seq.atoms
+
+        # Find atoms that need unfolding (SubProduction with unfold=True, or NonTerminal preceded by >)
+        unfold_index = None
+        for i, atom in enumerate(atoms):
+            if isinstance(atom, SubProduction) and atom.unfold and not atom.fold:
+                unfold_index = i
+                break
+
+        if unfold_index is None:
+            # No unfolding needed at this level
+            return [prod]
+
+        # Get the atom to unfold
+        atom = atoms[unfold_index]
+
+        # Get productions to unfold
+        if isinstance(atom, SubProduction):
+            inner_prods = atom.productions.items
+            # If it has a NonTerminal inside that should be unfolded, handle that
+            if len(inner_prods) == 1 and len(inner_prods[0].sequence.atoms) == 1:
+                inner_atom = inner_prods[0].sequence.atoms[0]
+                if isinstance(inner_atom, NonTerminal):
+                    # This is >NonTerm - unfold the non-terminal
+                    decl = self.declarations.get(inner_atom.name)
+                    if decl:
+                        inner_prods = decl.productions.items
+
+        # Create new productions by distributing
+        result = []
+        prefix = atoms[:unfold_index]
+        suffix = atoms[unfold_index + 1:]
+
+        for inner_prod in inner_prods:
+            inner_atoms = inner_prod.sequence.atoms
+            inner_label = inner_prod.sequence.label
+
+            # Combine: prefix + inner_atoms + suffix
+            new_atoms = list(prefix) + list(inner_atoms) + list(suffix)
+
+            # Inherit label from inner if present, else from outer
+            new_label = inner_label if inner_label else seq.label
+
+            # Combine weights
+            new_weight = prod.weight + inner_prod.weight
+
+            new_prod = Production(Sequence(new_atoms, new_label), new_weight)
+
+            # Recursively expand any remaining unfolding
+            result.extend(self.expand_unfolding_in_production(new_prod, in_deep_unfold))
+
+        return result
+
+    def process_atom(self, atom: ASTNode, in_deep_unfold: bool = False) -> ASTNode:
+        """Process an atom recursively."""
+        if isinstance(atom, SubProduction):
+            # Handle deep unfold
+            new_in_deep = in_deep_unfold or atom.is_deep_unfold
+            should_unfold = atom.unfold or (in_deep_unfold and not atom.fold)
+
+            new_decls = []
+            for decl in atom.declarations:
+                new_prods = self.process_productions(decl.productions, new_in_deep)
+                new_decls.append(Declaration(decl.name, new_prods, decl.is_strong))
+
+            new_prods = self.process_productions(atom.productions, new_in_deep)
+
+            return SubProduction(
+                new_prods, new_decls,
+                atom.is_optional, atom.is_permutable, atom.is_iterable,
+                atom.is_deep_unfold, should_unfold, atom.fold
+            )
+        elif isinstance(atom, Selection):
+            return Selection(self.process_atom(atom.atom, in_deep_unfold), atom.labels, atom.reset)
+        elif isinstance(atom, PositionalGroup):
+            return PositionalGroup([self.process_atom(a, in_deep_unfold) for a in atom.atoms])
+        else:
+            return atom
 
 
 # =============================================================================
@@ -762,8 +937,26 @@ class Generator:
 
     def generate_sequence(self, sequence: Sequence, env: Environment) -> List[str]:
         """Generate from a sequence of atoms."""
+        atoms = sequence.atoms
+
+        # Handle permutation: collect permutable atoms and shuffle their positions
+        permutable_indices = []
+        permutable_atoms = []
+        for i, atom in enumerate(atoms):
+            if isinstance(atom, SubProduction) and atom.is_permutable:
+                permutable_indices.append(i)
+                permutable_atoms.append(atom)
+
+        if len(permutable_atoms) > 1:
+            # Shuffle permutable atoms
+            random.shuffle(permutable_atoms)
+            # Create new atom list with shuffled permutables
+            atoms = list(atoms)
+            for i, idx in enumerate(permutable_indices):
+                atoms[idx] = permutable_atoms[i]
+
         result = []
-        for atom in sequence.atoms:
+        for atom in atoms:
             result.extend(self.generate_atom(atom, env))
         return result
 
@@ -813,6 +1006,9 @@ class Generator:
             while random.random() < 0.5:
                 result.extend(self.generate_productions(sub.productions, local_env))
             return result
+
+        # Handle permutation - this is handled at sequence level, not here
+        # Permutable subproductions are markers; actual permutation happens in generate_sequence
 
         # Normal generation
         return self.generate_productions(sub.productions, local_env)
@@ -875,6 +1071,10 @@ class Polygen:
         tokens = lexer.tokenize()
         parser = Parser(tokens)
         self.grammar = parser.parse()
+
+        # Preprocess: expand positional generation
+        preprocessor = Preprocessor()
+        self.grammar = preprocessor.process(self.grammar)
 
     def generate(self, start_symbol: str = 'S', max_recursion: int = 100) -> str:
         """
