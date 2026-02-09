@@ -1,0 +1,73 @@
+Innanzitutto un chiarimento. Se dici "l'implementazione è ora completa per tutte le feature _principali_", l'aggettivo "principali" sembra suggerire che manca ancora qualcosa. Cosa?
+
+Poi, ho visto che i test sono un po' particolari, nel senso che non contengono degli `assert` ma solo dei `print`. Mi piace l'idea di vedere con gli occhi, ma vorrei anche dei test veri.
+Ecco come ho iniziato a fare io, ho raccolto le generazioni in un set e ho controllato che vengano generate tutte e funziona. Si può eventualmente agire sul seed o sul numero di generazioni.
+
+
+```
+import random
+import pytest
+
+from polygen import Polygen, Lexer, Parser, LexerError, ParserError, GeneratorError
+
+
+@pytest.fixture
+def seeded_gen():
+    random.seed(42)
+
+
+def test_basic_grammar():
+    """Test basic grammar with simple alternatives."""
+    print("=" * 60)
+    print("TEST: Basic grammar")
+    print("=" * 60)
+
+    grammar = '''
+    S ::= an apple | a mango | an orange ;
+    '''
+
+    pg = Polygen(grammar)
+    print("Grammar:", grammar.strip())
+    print("\nGenerated (10x):")
+    generations = set()
+    for _ in range(10):
+        gen = pg.generate()
+        generations.add(gen)
+        print(f"  {gen}")
+    print()
+    # dovrebbeero essere state generate tutte e 3 le opzioni
+    generations == {"an apple", "a mango", "an orange"}
+
+
+def test_nonterminal_references(seeded_gen):
+    """Test grammar with non-terminal references."""
+    print("=" * 60)
+    print("TEST: Non-terminal references")
+    print("=" * 60)
+
+    grammar = '''
+    S ::= the Animal is eating Fruit ;
+    Animal ::= cat | dog ;
+    Fruit ::= an apple | a mango ;
+    '''
+
+    pg = Polygen(grammar)
+    print("Grammar:", grammar.strip())
+    print("\nGenerated (10x):")
+    generations = set()
+    for _ in range(10):
+        gen = pg.generate()
+        generations.add(gen)
+        print(f"  {gen}")
+    print()
+    assert generations == {
+        "the cat is eating an apple",
+        "the cat is eating a mango",
+        "the dog is eating an apple",
+        "the dog is eating a mango",
+    }
+```
+
+
+Che ne dici?
+Se ti piace questa idea, completa il lavoro.
