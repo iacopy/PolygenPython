@@ -1,14 +1,12 @@
 # Polygen Python
 
 Un'implementazione in Python di [Polygen](http://polygen.org), il generatore di testo casuale basato su grammatiche.
-Con l'ausilio di Claude 4.5 Opus.
 
 ## Caratteristiche implementate
 
 Questa implementazione supporta tutte le feature principali del linguaggio PML (Polygen Meta Language):
 
 ### Feature base
-
 - ✅ Simboli terminali e non-terminali
 - ✅ Produzioni con alternative separate da pipe (`|`)
 - ✅ Subproduzioni tra parentesi tonde `(...)`
@@ -20,21 +18,18 @@ Questa implementazione supporta tutte le feature principali del linguaggio PML (
 - ✅ Commenti `(* ... *)`
 
 ### Label e selezione
-
 - ✅ Label sulle produzioni (`label: production`)
 - ✅ Selezione singola (`.label`)
 - ✅ Selezione multipla con pesi `.(+l1|-l2|l3)`
 - ✅ Reset selezione (`.`)
 
 ### Binding e scoping
-
 - ✅ Binding debole `::=` (closure)
 - ✅ Binding forte `:=` (suspension/assignment)
 - ✅ Scoping locale con dichiarazioni nelle subproduzioni
 - ✅ Ricorsione
 
 ### Feature avanzate
-
 - ✅ Iterazione `(...)+`
 - ✅ Permutazione `{...}`
 - ✅ Generazione posizionale (`,`)
@@ -43,12 +38,38 @@ Questa implementazione supporta tutte le feature principali del linguaggio PML (
 - ✅ Deep unfolding `>>...<<`
 - ✅ Folding `<` (previene unfolding in deep unfold)
 
+## Feature non implementate
+
+Le seguenti feature di **validazione statica** (Sezione 4 della spec) non sono implementate:
+
+### Errori non rilevati
+
+- Cyclic recursions (ricorsioni infinite)
+- Recursive unfoldings (unfolding ricorsivi)
+- Epsilon-productions che rendono la grammatica inutile
+
+### Warning non implementati
+
+- Livello 0: (nessuno attualmente)
+- Livello 1: undefined `I` symbol, potential epsilon-productions, destructive selection
+- Livello 2: useless permutation, useless unfolding
+- Livello 3: unfolding a suspended symbol
+
+Queste sono feature di robustezza e diagnostica, non di generazione. Il core della generazione è completo.
+
 ## Installazione
 
-Non richiede dipendenze esterne. È sufficiente Python 3.7+.
+Non richiede dipendenze esterne per l'uso base. È sufficiente Python 3.7+.
 
 ```bash
 # Copia il file polygen.py nella tua directory di lavoro
+```
+
+Per eseguire i test è necessario pytest:
+
+```bash
+pip install pytest
+python -m pytest test_polygen_pytest.py -v
 ```
 
 ## Utilizzo
@@ -197,7 +218,7 @@ S ::= very (much ^ )+ better ;
 ```polygen
 (* Gli elementi tra {} vengono permutati casualmente *)
 S ::= whether {is} {therefore} {he} ;
-(* Genera tutte le permutazioni: "whether is therefore he", 
+(* Genera tutte le permutazioni: "whether is therefore he",
    "whether therefore is he", etc. *)
 ```
 
