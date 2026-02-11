@@ -1,0 +1,9 @@
+> Ho un'altra domanda. Quali feature nuove potresti implementare, mantenendo la compatibilità con le grammatiche attuali? 
+'autore originale di Polygen scrisse (mi pare in un newsgroup, non ricordo bene) che stava lavorando ad una versione (in alpha) in cui ad esempio le produzioni potevano restituire etichette. Ma poi non è mai uscita la versione 2.0.
+
+[...]
+
+> Sì, mi interessano le etichette restituite, gli include/import e anche i pesi numerici espliciti.
+Le etichette potrebbero anche orientare la produzione in una direzione?
+Ad esempio se viene estratto un certo stato d'animo potrebbe influenzare certe azioni, oppure un certo luogo od oggetto.
+L'importante è non rompere la compatibilità.

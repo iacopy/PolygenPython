@@ -8,12 +8,17 @@ This module implements the core features of PML (Polygen Meta Language):
 - Optional subproductions (square brackets) - 50% probability
 - Concatenation (^) to suppress spaces
 - Epsilon (_) for empty production
-- Probability modifiers (+ and -)
+- Probability modifiers (+ and -) and numeric weights (#N)
 - Labels and selection (.label)
 - Capitalization (backslash)
 - Comments (* ... *)
 - Weak binding (::=) and strong binding (:=)
 - Iteration (+)
+- Permutation ({...})
+- Positional generation (,)
+- Unfolding (> and >>...<<)
+- Emitted labels (<-)
+- Include directive (@include)
 """
 
 import re
@@ -32,6 +37,7 @@ class TokenType(Enum):
     TERM = auto()           # lowercase word or quoted string
     NONTERM = auto()        # Capitalized identifier
     LABEL = auto()          # label identifier (after colon or dot)
+    NUMBER = auto()         # numeric weight (e.g., 5)
 
     # Operators
     DEFINE = auto()         # ::=
@@ -48,6 +54,11 @@ class TokenType(Enum):
     MINUS = auto()          # -
     GT = auto()             # >
     LT = auto()             # <
+    EMIT = auto()           # <- (emit labels)
+    HASH = auto()           # # (numeric weight prefix)
+
+    # Directives
+    INCLUDE = auto()        # @include
 
     # Brackets
     LPAREN = auto()         # (
@@ -165,6 +176,13 @@ class Lexer:
 
         return ''.join(result), is_nonterm
 
+    def _read_number(self) -> str:
+        """Read a number (integer)."""
+        result = []
+        while self.peek() and self.peek().isdigit():
+            result.append(self.advance())
+        return ''.join(result)
+
     def tokenize(self) -> List[Token]:
         tokens = []
 
@@ -193,6 +211,9 @@ class Lexer:
                 self.advance(); self.advance()
             elif ch == '<' and self.peek(1) == '<':
                 tokens.append(Token(TokenType.DEEPCLOSE, '<<', line, col))
+                self.advance(); self.advance()
+            elif ch == '<' and self.peek(1) == '-':
+                tokens.append(Token(TokenType.EMIT, '<-', line, col))
                 self.advance(); self.advance()
             # Single-character tokens
             elif ch == '|':
@@ -253,6 +274,22 @@ class Lexer:
             elif ch == '"':
                 value = self.read_quoted_string()
                 tokens.append(Token(TokenType.TERM, value, line, col))
+            # Numeric weight prefix (#5)
+            elif ch == '#':
+                self.advance()  # consume #
+                if self.peek().isdigit():
+                    value = self._read_number()
+                    tokens.append(Token(TokenType.HASH, value, line, col))
+                else:
+                    raise LexerError("Expected number after #", line, col)
+            # Directive (@include)
+            elif ch == '@':
+                self.advance()  # consume @
+                word, _ = self.read_identifier()
+                if word == 'include':
+                    tokens.append(Token(TokenType.INCLUDE, '@include', line, col))
+                else:
+                    raise LexerError(f"Unknown directive: @{word}", line, col)
             # Identifier (terminal or non-terminal)
             elif ch.isalpha() or ch == "'":
                 value, is_nonterm = self.read_identifier()
@@ -260,10 +297,10 @@ class Lexer:
                     tokens.append(Token(TokenType.NONTERM, value, line, col))
                 else:
                     tokens.append(Token(TokenType.TERM, value, line, col))
-            # Numbers as terminals
+            # Numbers (can be weight or terminal)
             elif ch.isdigit():
-                value, _ = self.read_identifier()
-                tokens.append(Token(TokenType.TERM, value, line, col))
+                value = self._read_number()
+                tokens.append(Token(TokenType.NUMBER, value, line, col))
             else:
                 raise LexerError(f"Illegal character: {ch!r}", line, col)
 
@@ -316,9 +353,11 @@ class Sequence(ASTNode):
 
 @dataclass
 class Production(ASTNode):
-    """A single production with weight modifier."""
+    """A single production with weight modifier and emitted labels."""
     sequence: Sequence
-    weight: int = 0  # positive = +, negative = -
+    weight: int = 0  # positive = +, negative = -, or explicit numeric
+    numeric_weight: Optional[int] = None  # explicit numeric weight (e.g., 5:)
+    emitted_labels: List[str] = field(default_factory=list)  # <- label1,label2
 
 
 @dataclass
@@ -445,24 +484,51 @@ class Parser:
         return Productions(items)
 
     def parse_production(self) -> Production:
-        """Parse a single production with optional +/- weight modifiers."""
+        """Parse a single production with optional +/- or #N weight modifiers."""
         weight = 0
-        while self.match(TokenType.PLUS, TokenType.MINUS):
-            if self.advance().type == TokenType.PLUS:
-                weight += 1
-            else:
-                weight -= 1
+        numeric_weight = None
+
+        # Check for #N numeric weight
+        if self.match(TokenType.HASH):
+            numeric_weight = int(self.advance().value)
+        else:
+            # Check for +/- modifiers
+            while self.match(TokenType.PLUS, TokenType.MINUS):
+                if self.advance().type == TokenType.PLUS:
+                    weight += 1
+                else:
+                    weight -= 1
 
         sequence = self.parse_sequence()
-        return Production(sequence, weight)
+
+        # Check for emitted labels: <- label1, label2
+        emitted_labels = []
+        if self.match(TokenType.EMIT):
+            self.advance()  # consume <-
+            emitted_labels = self.parse_emitted_labels()
+
+        return Production(sequence, weight, numeric_weight, emitted_labels)
+
+    def parse_emitted_labels(self) -> List[str]:
+        """Parse comma-separated emitted labels after <-"""
+        labels = []
+        if self.match(TokenType.TERM, TokenType.NONTERM):
+            labels.append(self.advance().value)
+            while self.match(TokenType.COMMA):
+                self.advance()  # consume ,
+                if self.match(TokenType.TERM, TokenType.NONTERM):
+                    labels.append(self.advance().value)
+                else:
+                    break
+        return labels
 
     def parse_sequence(self) -> Sequence:
         """Parse a sequence of atoms, optionally labeled."""
         label = None
         atoms = []
 
-        # Check for label: prefix
-        if self.match(TokenType.NONTERM, TokenType.TERM):
+        # Check for label: prefix (labels can be terms, nonterms, or numbers)
+        if self.match(TokenType.NONTERM, TokenType.TERM, TokenType.NUMBER):
             # Lookahead to check if this is a label
             if self.peek(1).type == TokenType.COLON:
                 label = self.advance().value
@@ -491,7 +557,7 @@ class Parser:
     def _is_atom_start(self) -> bool:
         """Check if current token can start an atom."""
         return self.match(
-            TokenType.TERM, TokenType.NONTERM,
+            TokenType.TERM, TokenType.NONTERM, TokenType.NUMBER,
             TokenType.CARET, TokenType.UNDERSCORE, TokenType.BACKSLASH,
             TokenType.LPAREN, TokenType.LBRACKET, TokenType.LBRACE,
             TokenType.DEEPOPEN, TokenType.GT, TokenType.LT
@@ -514,6 +580,9 @@ class Parser:
         atom = None
 
         if self.match(TokenType.TERM):
+            atom = Terminal(self.advance().value)
+        elif self.match(TokenType.NUMBER):
+            # Number used as terminal (not as weight prefix)
             atom = Terminal(self.advance().value)
         elif self.match(TokenType.NONTERM):
             name = self.advance().value
@@ -573,8 +642,8 @@ class Parser:
                 labels = self.parse_label_list()
                 self.expect(TokenType.RPAREN)
                 atom = Selection(atom, labels)
-            elif self.match(TokenType.NONTERM, TokenType.TERM):
-                # Simple .label
+            elif self.match(TokenType.NONTERM, TokenType.TERM, TokenType.NUMBER):
+                # Simple .label (labels can be words or numbers)
                 label_token = self.advance()
                 atom = Selection(atom, [(label_token.value, 0)])
             else:
@@ -594,7 +663,7 @@ class Parser:
                 else:
                     weight -= 1
 
-            if self.match(TokenType.NONTERM, TokenType.TERM):
+            if self.match(TokenType.NONTERM, TokenType.TERM, TokenType.NUMBER):
                 labels.append((self.advance().value, weight))
 
             if not self.match(TokenType.PIPE):
@@ -662,7 +731,9 @@ class Preprocessor:
         atoms = seq.atoms
 
         # First expand positional groups
-        positional_expanded = self.expand_positional_in_sequence(atoms, seq.label, prod.weight, in_deep_unfold)
+        positional_expanded = self.expand_positional_in_sequence(
+            atoms, seq.label, prod.weight, prod.numeric_weight, prod.emitted_labels, in_deep_unfold
+        )
 
         # Then handle unfolding for each resulting production
         final_result = []
@@ -673,7 +744,8 @@ class Preprocessor:
         return final_result
 
     def expand_positional_in_sequence(self, atoms: List[ASTNode], label: Optional[str],
-                                       weight: int, in_deep_unfold: bool) -> List[Production]:
+                                       weight: int, numeric_weight: Optional[int],
+                                       emitted_labels: List[str], in_deep_unfold: bool) -> List[Production]:
         """Expand positional groups in a sequence."""
         # Find all positional groups
         groups = [(i, atom) for i, atom in enumerate(atoms) if isinstance(atom, PositionalGroup)]
@@ -681,7 +753,7 @@ class Preprocessor:
         if not groups:
             # No positional groups, process atoms and return as single production
             new_atoms = [self.process_atom(a, in_deep_unfold) for a in atoms]
-            return [Production(Sequence(new_atoms, label), weight)]
+            return [Production(Sequence(new_atoms, label), weight, numeric_weight, emitted_labels)]
 
         # Check all groups have same size
         group_size = len(groups[0][1].atoms)
@@ -700,7 +772,7 @@ class Preprocessor:
                     new_atoms.append(self.process_atom(atom.atoms[pos], in_deep_unfold))
                 else:
                     new_atoms.append(self.process_atom(atom, in_deep_unfold))
-            result.append(Production(Sequence(new_atoms, label), weight))
+            result.append(Production(Sequence(new_atoms, label), weight, numeric_weight, emitted_labels))
 
         return result
 
@@ -753,7 +825,13 @@ class Preprocessor:
             # Combine weights
             new_weight = prod.weight + inner_prod.weight
 
-            new_prod = Production(Sequence(new_atoms, new_label), new_weight)
+            # Combine numeric weights (inner overrides if present)
+            new_numeric = inner_prod.numeric_weight if inner_prod.numeric_weight is not None else prod.numeric_weight
+
+            # Combine emitted labels
+            new_emitted = prod.emitted_labels + inner_prod.emitted_labels
+
+            new_prod = Production(Sequence(new_atoms, new_label), new_weight, new_numeric, new_emitted)
 
             # Recursively expand any remaining unfolding
             result.extend(self.expand_unfolding_in_production(new_prod, in_deep_unfold))
@@ -845,7 +923,7 @@ class Generator:
             env.bind(decl.name, decl.productions, decl.is_strong)
 
         # Generate from start symbol
-        result = self.generate_nonterm(start_symbol, env)
+        result, _ = self.generate_nonterm(start_symbol, env)
         return self._format_output(result)
 
     def _format_output(self, tokens: List[str]) -> str:
@@ -871,8 +949,8 @@ class Generator:
 
         return ''.join(result).strip()
 
-    def generate_nonterm(self, name: str, env: Environment) -> List[str]:
-        """Generate from a non-terminal symbol."""
+    def generate_nonterm(self, name: str, env: Environment) -> Tuple[List[str], List[str]]:
+        """Generate from a non-terminal symbol. Returns (tokens, emitted_labels)."""
         self.recursion_depth += 1
         if self.recursion_depth > self.max_recursion:
             raise GeneratorError(f"Maximum recursion depth exceeded for symbol {name}")
@@ -888,22 +966,22 @@ class Generator:
             if is_strong:
                 cached = env.get_suspension(name)
                 if cached is not None:
-                    return cached
+                    return cached, []  # No emitted labels from cache
 
             # Generate in closure environment with current labels
             gen_env = closure_env.child(env.active_labels)
-            result = self.generate_productions(productions, gen_env)
+            result, emitted = self.generate_productions(productions, gen_env)
 
-            # Cache result for strong binding
+            # Cache result for strong binding (not emitted labels though)
             if is_strong:
                 env.set_suspension(name, result)
 
-            return result
+            return result, emitted
         finally:
             self.recursion_depth -= 1
 
-    def generate_productions(self, productions: Productions, env: Environment) -> List[str]:
-        """Generate from a set of productions."""
+    def generate_productions(self, productions: Productions, env: Environment) -> Tuple[List[str], List[str]]:
+        """Generate from a set of productions. Returns (tokens, emitted_labels)."""
         # Filter productions by active labels
         valid_prods = []
         for prod in productions.items:
@@ -912,15 +990,23 @@ class Generator:
                 valid_prods.append(prod)
 
         if not valid_prods:
-            return []  # All filtered out (destructive selection)
+            return [], []  # All filtered out (destructive selection)
 
-        # Calculate weights
+        # Calculate weights - prefer numeric weights over +/- modifiers
         weights = []
-        min_weight = min(p.weight for p in valid_prods)
-        for prod in valid_prods:
-            # Normalize: shift so minimum is 1
-            w = prod.weight - min_weight + 1
-            weights.append(w)
+        has_numeric = any(p.numeric_weight is not None for p in valid_prods)
+
+        if has_numeric:
+            # Use numeric weights (default to 1 if not specified)
+            for prod in valid_prods:
+                w = prod.numeric_weight if prod.numeric_weight is not None else 1
+                weights.append(max(1, w))
+        else:
+            # Use +/- modifier weights
+            min_weight = min(p.weight for p in valid_prods)
+            for prod in valid_prods:
+                w = prod.weight - min_weight + 1
+                weights.append(w)
 
         # Weighted random choice
         total = sum(weights)
@@ -933,7 +1019,8 @@ class Generator:
                 chosen = prod
                 break
 
-        return self.generate_sequence(chosen.sequence, env)
+        result = self.generate_sequence(chosen.sequence, env)
+        return result, chosen.emitted_labels
 
     def generate_sequence(self, sequence: Sequence, env: Environment) -> List[str]:
         """Generate from a sequence of atoms."""
@@ -956,26 +1043,36 @@ class Generator:
                 atoms[idx] = permutable_atoms[i]
 
         result = []
+        # Track accumulated emitted labels to affect subsequent atoms
+        current_env = env
+
         for atom in atoms:
-            result.extend(self.generate_atom(atom, env))
+            tokens, emitted = self.generate_atom(atom, current_env)
+            result.extend(tokens)
+
+            # If this atom emitted labels, create new env with them for subsequent atoms
+            if emitted:
+                new_labels = current_env.active_labels | set(emitted)
+                current_env = current_env.child(new_labels)
+
         return result
 
-    def generate_atom(self, atom: ASTNode, env: Environment) -> List[str]:
-        """Generate from a single atom."""
+    def generate_atom(self, atom: ASTNode, env: Environment) -> Tuple[List[str], List[str]]:
+        """Generate from a single atom. Returns (tokens, emitted_labels)."""
         if isinstance(atom, Terminal):
-            return [atom.value]
+            return [atom.value], []
 
         elif isinstance(atom, NonTerminal):
             return self.generate_nonterm(atom.name, env)
 
         elif isinstance(atom, Epsilon):
-            return []
+            return [], []
 
         elif isinstance(atom, Concat):
-            return ['\x00']  # Special concat marker
+            return ['\x00'], []  # Special concat marker
 
         elif isinstance(atom, Capitalize):
-            return ['\x01']  # Special capitalize marker
+            return ['\x01'], []  # Special capitalize marker
 
         elif isinstance(atom, SubProduction):
             return self.generate_subproduction(atom, env)
@@ -986,11 +1083,11 @@ class Generator:
         else:
             raise GeneratorError(f"Unknown atom type: {type(atom)}")
 
-    def generate_subproduction(self, sub: SubProduction, env: Environment) -> List[str]:
-        """Generate from a subproduction."""
+    def generate_subproduction(self, sub: SubProduction, env: Environment) -> Tuple[List[str], List[str]]:
+        """Generate from a subproduction. Returns (tokens, emitted_labels)."""
         # Handle optional: 50% chance of epsilon
         if sub.is_optional and random.random() < 0.5:
-            return []
+            return [], []
 
         # Create local environment with declarations
         local_env = env.child()
@@ -1000,12 +1097,17 @@ class Generator:
         # Handle iteration
         if sub.is_iterable:
             result = []
+            all_emitted = []
             # At least one iteration
-            result.extend(self.generate_productions(sub.productions, local_env))
+            tokens, emitted = self.generate_productions(sub.productions, local_env)
+            result.extend(tokens)
+            all_emitted.extend(emitted)
             # 50% chance for each additional iteration
             while random.random() < 0.5:
-                result.extend(self.generate_productions(sub.productions, local_env))
-            return result
+                tokens, emitted = self.generate_productions(sub.productions, local_env)
+                result.extend(tokens)
+                all_emitted.extend(emitted)
+            return result, all_emitted
 
         # Handle permutation - this is handled at sequence level, not here
         # Permutable subproductions are markers; actual permutation happens in generate_sequence
@@ -1013,8 +1115,8 @@ class Generator:
         # Normal generation
         return self.generate_productions(sub.productions, local_env)
 
-    def generate_selection(self, sel: Selection, env: Environment) -> List[str]:
-        """Generate from a selection."""
+    def generate_selection(self, sel: Selection, env: Environment) -> Tuple[List[str], List[str]]:
+        """Generate from a selection. Returns (tokens, emitted_labels)."""
         if sel.reset:
             # Reset selection: clear active labels
             new_env = env.child(set())
@@ -1048,26 +1150,88 @@ class Generator:
 
 
 # =============================================================================
+# INCLUDE PREPROCESSING
+# =============================================================================
+
+def preprocess_includes(source: str, base_path: str = '.', included: Optional[Set[str]] = None) -> str:
+    """
+    Preprocess @include directives in the source.
+
+    Args:
+        source: The grammar source code
+        base_path: Base path for resolving relative includes
+        included: Set of already-included files (to prevent cycles)
+
+    Returns:
+        Source with all @include directives replaced by their content
+    """
+    import os
+
+    if included is None:
+        included = set()
+
+    result_lines = []
+
+    for line in source.split('\n'):
+        stripped = line.strip()
+        if stripped.startswith('@include'):
+            # Parse: @include "filename"
+            match = re.match(r'@include\s+"([^"]+)"', stripped)
+            if match:
+                filename = match.group(1)
+                filepath = os.path.join(base_path, filename)
+                abs_path = os.path.abspath(filepath)
+
+                if abs_path in included:
+                    # Already included, skip to prevent cycles
+                    continue
+
+                included.add(abs_path)
+
+                if not os.path.exists(filepath):
+                    raise LexerError(f"Include file not found: {filename}", 0, 0)
+
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    include_content = f.read()
+
+                # Recursively preprocess the included file
+                include_dir = os.path.dirname(filepath)
+                processed = preprocess_includes(include_content, include_dir, included)
+                result_lines.append(processed)
+            else:
+                raise LexerError(f"Invalid @include syntax: {stripped}", 0, 0)
+        else:
+            result_lines.append(line)
+
+    return '\n'.join(result_lines)
+
+
+# =============================================================================
 # PUBLIC API
 # =============================================================================
 
 class Polygen:
     """Main Polygen class for parsing and generating from grammars."""
 
-    def __init__(self, source: str):
+    def __init__(self, source: str, base_path: str = '.'):
         """
         Initialize Polygen with a grammar source.
 
         Args:
             source: The PML grammar source code
+            base_path: Base path for resolving @include directives
         """
         self.source = source
+        self.base_path = base_path
         self.grammar = None
         self._parse()
 
     def _parse(self):
         """Parse the grammar source."""
-        lexer = Lexer(self.source)
+        # First, preprocess @include directives
+        processed_source = preprocess_includes(self.source, self.base_path)
+
+        lexer = Lexer(processed_source)
         tokens = lexer.tokenize()
         parser = Parser(tokens)
         self.grammar = parser.parse()
@@ -1113,8 +1277,10 @@ class Polygen:
         Returns:
             A Polygen instance
         """
+        import os
+        base_path = os.path.dirname(os.path.abspath(path))
         with open(path, 'r', encoding='utf-8') as f:
-            return cls(f.read())
+            return cls(f.read(), base_path)
 
 
 def main():

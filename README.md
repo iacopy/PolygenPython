@@ -22,6 +22,7 @@ Questa implementazione supporta tutte le feature principali del linguaggio PML (
 - ✅ Selezione singola (`.label`)
 - ✅ Selezione multipla con pesi `.(+l1|-l2|l3)`
 - ✅ Reset selezione (`.`)
+- ✅ Label numerici (`.1`, `.2`, etc.)
 
 ### Binding e scoping
 - ✅ Binding debole `::=` (closure)
@@ -38,18 +39,21 @@ Questa implementazione supporta tutte le feature principali del linguaggio PML (
 - ✅ Deep unfolding `>>...<<`
 - ✅ Folding `<` (previene unfolding in deep unfold)
 
+### Estensioni Polygen v2 (nuove feature retrocompatibili)
+- ✅ **Pesi numerici** `#N` - controllo preciso delle probabilità
+- ✅ **Etichette emesse** `<-label` - influenzano produzioni successive
+- ✅ **Include** `@include "file.grm"` - grammatiche modulari
+
 ## Feature non implementate
 
 Le seguenti feature di **validazione statica** (Sezione 4 della spec) non sono implementate:
 
 ### Errori non rilevati
-
 - Cyclic recursions (ricorsioni infinite)
-- Recursive unfoldings (unfolding ricorsivi)
+- Recursive unfoldings (unfolding ricorsivi)  
 - Epsilon-productions che rendono la grammatica inutile
 
 ### Warning non implementati
-
 - Livello 0: (nessuno attualmente)
 - Livello 1: undefined `I` symbol, potential epsilon-productions, destructive selection
 - Livello 2: useless permutation, useless unfolding
@@ -218,7 +222,7 @@ S ::= very (much ^ )+ better ;
 ```polygen
 (* Gli elementi tra {} vengono permutati casualmente *)
 S ::= whether {is} {therefore} {he} ;
-(* Genera tutte le permutazioni: "whether is therefore he",
+(* Genera tutte le permutazioni: "whether is therefore he", 
    "whether therefore is he", etc. *)
 ```
 
@@ -262,6 +266,67 @@ S ::= >> a (cow | <Animal) << ;
 S ::= Animal.(+big|--small) ;
 Animal ::= big: elephant | big: whale | small: ant | small: bee ;
 (* big è molto più probabile di small *)
+```
+
+## Estensioni Polygen v2
+
+Queste feature sono estensioni retrocompatibili - le grammatiche esistenti continuano a funzionare.
+
+### Pesi numerici (#N)
+
+```polygen
+(* Controllo preciso delle probabilità con #N *)
+S ::= (#5 comune | #2 raro | #1 rarissimo) ;
+(* comune ~62.5%, raro ~25%, rarissimo ~12.5% *)
+
+(* Equivalente a usare multipli + ma più leggibile *)
+S ::= (+++++ comune | ++ raro | + rarissimo) ;
+```
+
+### Etichette emesse (<-)
+
+```polygen
+(* Le etichette emesse influenzano le produzioni SUCCESSIVE nella sequenza *)
+S ::= Luogo Azione ;
+Luogo ::= nella foresta <-natura | in citta <-urbano ;
+Azione ::= natura: cammina | urbano: prende un taxi | corre ;
+
+(* "nella foresta" emette "natura" -> Azione sarà "cammina" o "corre"
+   "in citta" emette "urbano" -> Azione sarà "prende un taxi" o "corre" *)
+
+(* Emissione multipla *)
+Source ::= start <-a,b ;  (* emette sia 'a' che 'b' *)
+
+(* NOTA: le etichette si propagano solo in avanti nella sequenza.
+   Per concordanza di genere tradizionale, usare la selezione classica
+   o la generazione posizionale. *)
+```
+
+### Include (@include)
+
+```polygen
+(* Importa definizioni da altri file *)
+@include "vocabolario.grm"
+@include "verbi.grm"
+
+S ::= Soggetto Verbo Complemento ;
+
+(* Gli include sono ricorsivi e protetti da cicli *)
+```
+
+Esempio di file modulari:
+
+```
+(* main.grm *)
+@include "nouns.grm"
+@include "verbs.grm"
+S ::= Noun Verb ;
+
+(* nouns.grm *)
+Noun ::= cat | dog | bird ;
+
+(* verbs.grm *)
+Verb ::= runs | sleeps | eats ;
 ```
 
 ## Esempi
