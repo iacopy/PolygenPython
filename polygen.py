@@ -824,7 +824,9 @@ class Environment:
     bindings: Dict[str, Tuple[Productions, bool, 'Environment']] = field(default_factory=dict)
     # name -> (productions, is_strong, closure_env)
     suspensions: Dict[str, List[str]] = field(default_factory=dict)
-    # name -> cached result (for strong bindings)
+    # name -> cached result for strong bindings. A suspension is stored in
+    # the environment where the symbol is bound, so every occurrence in that
+    # scope sees the same value.
     parent: Optional['Environment'] = None
     active_labels: Set[str] = field(default_factory=set)
 
@@ -837,16 +839,6 @@ class Environment:
         if self.parent:
             return self.parent.lookup(name)
         return None
-
-    def get_suspension(self, name: str) -> Optional[List[str]]:
-        if name in self.suspensions:
-            return self.suspensions[name]
-        if self.parent:
-            return self.parent.get_suspension(name)
-        return None
-
-    def set_suspension(self, name: str, value: List[str]):
-        self.suspensions[name] = value
 
     def child(self, labels: Optional[Set[str]] = None) -> 'Environment':
         """Create a child environment."""
@@ -907,19 +899,15 @@ class Generator:
 
             productions, is_strong, closure_env = binding
 
-            # Check for suspension (strong binding with cached value)
-            if is_strong:
-                cached = env.get_suspension(name)
-                if cached is not None:
-                    return cached
+            if is_strong and name in closure_env.suspensions:
+                return closure_env.suspensions[name]
 
             # Generate in closure environment with current labels
             gen_env = closure_env.child(env.active_labels)
             result = self.generate_productions(productions, gen_env)
 
-            # Cache result for strong binding
             if is_strong:
-                env.set_suspension(name, result)
+                closure_env.suspensions[name] = result
 
             return result
         finally:
