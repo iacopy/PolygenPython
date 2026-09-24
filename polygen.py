@@ -14,12 +14,15 @@ This module implements the core features of PML (Polygen Meta Language):
 - Comments (* ... *)
 - Weak binding (::=) and strong binding (:=)
 - Iteration (+)
+- Emitted labels (#tag) - v2
+- Include directive (@include) - v2
 """
 
 import re
+import os
 import random
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict, Any, Tuple, Set
+from typing import List, Optional, Dict, Tuple, Set
 from enum import Enum, auto
 
 
@@ -32,6 +35,7 @@ class TokenType(Enum):
     TERM = auto()           # lowercase word or quoted string
     NONTERM = auto()        # Capitalized identifier
     LABEL = auto()          # label identifier (after colon or dot)
+    TAG = auto()            # #tag (emitted label)
 
     # Operators
     DEFINE = auto()         # ::=
@@ -194,6 +198,21 @@ class Lexer:
             elif ch == '<' and self.peek(1) == '<':
                 tokens.append(Token(TokenType.DEEPCLOSE, '<<', line, col))
                 self.advance(); self.advance()
+            # Valid @include directives are expanded before lexing
+            elif self.text.startswith('@include', self.pos):
+                raise LexerError(
+                    '@include must be on its own line, followed by a "quoted" path',
+                    line, col
+                )
+            # Emitted label: #label (same lexical rule as labels)
+            elif ch == '#':
+                self.advance()  # consume #
+                tag_name = []
+                while self.peek().isalnum():
+                    tag_name.append(self.advance())
+                if not tag_name:
+                    raise LexerError("Expected label name after #", line, col)
+                tokens.append(Token(TokenType.TAG, ''.join(tag_name), line, col))
             # Single-character tokens
             elif ch == '|':
                 tokens.append(Token(TokenType.PIPE, '|', line, col))
@@ -318,9 +337,10 @@ class Sequence(ASTNode):
 
 @dataclass
 class Production(ASTNode):
-    """A single production with weight modifier."""
+    """A single production with weight modifier and emitted labels."""
     sequence: Sequence
     weight: int = 0  # positive = +, negative = -
+    emitted_labels: List[str] = field(default_factory=list)  # #tag1 #tag2 ...
 
 
 @dataclass
@@ -447,7 +467,7 @@ class Parser:
         return Productions(items)
 
     def parse_production(self) -> Production:
-        """Parse a single production with optional +/- weight modifiers."""
+        """Parse a single production with optional +/- weight modifiers and emitted labels."""
         weight = 0
         while self.match(TokenType.PLUS, TokenType.MINUS):
             if self.advance().type == TokenType.PLUS:
@@ -456,14 +476,20 @@ class Parser:
                 weight -= 1
 
         sequence = self.parse_sequence()
-        return Production(sequence, weight)
+
+        # Collect emitted labels (#tag1 #tag2 ...)
+        emitted_labels = []
+        while self.match(TokenType.TAG):
+            emitted_labels.append(self.advance().value)
+
+        return Production(sequence, weight, emitted_labels)
 
     def parse_sequence(self) -> Sequence:
         """Parse a sequence of atoms, optionally labeled."""
         label = None
         atoms = []
 
-        # Check for label: prefix
+        # Check for label: prefix (can be NONTERM, TERM, or numeric like "1", "3")
         if self.match(TokenType.NONTERM, TokenType.TERM):
             # Lookahead to check if this is a label
             if self.peek(1).type == TokenType.COLON:
@@ -570,7 +596,7 @@ class Parser:
                 self.expect(TokenType.RPAREN)
                 atom = Selection(atom, labels)
             elif self.match(TokenType.NONTERM, TokenType.TERM):
-                # Simple .label
+                # Simple .label (including numeric labels like .1, .3)
                 label_token = self.advance()
                 atom = Selection(atom, [(label_token.value, 0)])
             else:
@@ -658,7 +684,9 @@ class Preprocessor:
         atoms = seq.atoms
 
         # First expand positional groups
-        positional_expanded = self.expand_positional_in_sequence(atoms, seq.label, prod.weight, in_deep_unfold)
+        positional_expanded = self.expand_positional_in_sequence(
+            atoms, seq.label, prod.weight, prod.emitted_labels, in_deep_unfold
+        )
 
         # Then handle unfolding for each resulting production
         final_result = []
@@ -669,7 +697,8 @@ class Preprocessor:
         return final_result
 
     def expand_positional_in_sequence(self, atoms: List[ASTNode], label: Optional[str],
-                                       weight: int, in_deep_unfold: bool) -> List[Production]:
+                                       weight: int, emitted_labels: List[str],
+                                       in_deep_unfold: bool) -> List[Production]:
         """Expand positional groups in a sequence."""
         # Find all positional groups
         groups = [(i, atom) for i, atom in enumerate(atoms) if isinstance(atom, PositionalGroup)]
@@ -677,7 +706,7 @@ class Preprocessor:
         if not groups:
             # No positional groups, process atoms and return as single production
             new_atoms = [self.process_atom(a, in_deep_unfold) for a in atoms]
-            return [Production(Sequence(new_atoms, label), weight)]
+            return [Production(Sequence(new_atoms, label), weight, emitted_labels)]
 
         # Check all groups have same size
         group_size = len(groups[0][1].atoms)
@@ -696,7 +725,7 @@ class Preprocessor:
                     new_atoms.append(self.process_atom(atom.atoms[pos], in_deep_unfold))
                 else:
                     new_atoms.append(self.process_atom(atom, in_deep_unfold))
-            result.append(Production(Sequence(new_atoms, label), weight))
+            result.append(Production(Sequence(new_atoms, label), weight, emitted_labels))
 
         return result
 
@@ -752,16 +781,26 @@ class Preprocessor:
             inner_atoms = inner_prod.sequence.atoms
             inner_label = inner_prod.sequence.label
 
+            # A one-production wrapper keeps the inner emitted labels at the
+            # position of the unfolded atom, so that they still affect only
+            # the atoms that follow it: unfolding must change probabilities,
+            # not semantics.
+            wrapper_prods = Productions([Production(
+                Sequence(list(inner_atoms)), 0, list(inner_prod.emitted_labels)
+            )])
+
             if preserve_permutation:
                 # Permutation precedes unfolding. Keep a one-production
                 # permutable wrapper so the generator can still swap it with
                 # the other permutable atoms in the surrounding sequence.
                 replacement = SubProduction(
-                    Productions([Production(Sequence(list(inner_atoms)))]),
+                    wrapper_prods,
                     declarations=local_declarations,
                     is_permutable=True,
                 )
                 replacement_atoms = [replacement]
+            elif inner_prod.emitted_labels:
+                replacement_atoms = [SubProduction(wrapper_prods)]
             else:
                 replacement_atoms = list(inner_atoms)
 
@@ -773,7 +812,9 @@ class Preprocessor:
             # Combine weights
             new_weight = prod.weight + inner_prod.weight
 
-            new_prod = Production(Sequence(new_atoms, new_label), new_weight)
+            new_prod = Production(
+                Sequence(new_atoms, new_label), new_weight, prod.emitted_labels
+            )
 
             # Recursively expand any remaining unfolding
             result.extend(self.expand_unfolding_in_production(new_prod, in_deep_unfold))
@@ -823,10 +864,10 @@ class Environment:
     """Scoped environment for symbol bindings."""
     bindings: Dict[str, Tuple[Productions, bool, 'Environment']] = field(default_factory=dict)
     # name -> (productions, is_strong, closure_env)
-    suspensions: Dict[str, List[str]] = field(default_factory=dict)
-    # name -> cached result for strong bindings. A suspension is stored in
-    # the environment where the symbol is bound, so every occurrence in that
-    # scope sees the same value.
+    suspensions: Dict[str, Tuple[List[str], List[str]]] = field(default_factory=dict)
+    # name -> cached (tokens, emitted_labels) for strong bindings. A suspension
+    # is stored in the environment where the symbol is bound, so every
+    # occurrence in that scope sees the same value.
     parent: Optional['Environment'] = None
     active_labels: Set[str] = field(default_factory=set)
 
@@ -860,7 +901,7 @@ class Generator:
             env.bind(decl.name, decl.productions, decl.is_strong)
 
         # Generate from start symbol
-        result = self.generate_nonterm(start_symbol, env)
+        result, _ = self.generate_nonterm(start_symbol, env)
         return self._format_output(result)
 
     def _format_output(self, tokens: List[str]) -> str:
@@ -886,8 +927,8 @@ class Generator:
 
         return ''.join(result).strip()
 
-    def generate_nonterm(self, name: str, env: Environment) -> List[str]:
-        """Generate from a non-terminal symbol."""
+    def generate_nonterm(self, name: str, env: Environment) -> Tuple[List[str], List[str]]:
+        """Generate from a non-terminal symbol. Returns (tokens, emitted_labels)."""
         self.recursion_depth += 1
         if self.recursion_depth > self.max_recursion:
             raise GeneratorError(f"Maximum recursion depth exceeded for symbol {name}")
@@ -899,22 +940,23 @@ class Generator:
 
             productions, is_strong, closure_env = binding
 
+            # A suspended symbol replays both its text and its emitted labels
             if is_strong and name in closure_env.suspensions:
                 return closure_env.suspensions[name]
 
             # Generate in closure environment with current labels
             gen_env = closure_env.child(env.active_labels)
-            result = self.generate_productions(productions, gen_env)
+            result, emitted = self.generate_productions(productions, gen_env)
 
             if is_strong:
-                closure_env.suspensions[name] = result
+                closure_env.suspensions[name] = (result, emitted)
 
-            return result
+            return result, emitted
         finally:
             self.recursion_depth -= 1
 
-    def generate_productions(self, productions: Productions, env: Environment) -> List[str]:
-        """Generate from a set of productions."""
+    def generate_productions(self, productions: Productions, env: Environment) -> Tuple[List[str], List[str]]:
+        """Generate from a set of productions. Returns (tokens, emitted_labels)."""
         # Filter productions by active labels
         valid_prods = []
         for prod in productions.items:
@@ -923,7 +965,7 @@ class Generator:
                 valid_prods.append(prod)
 
         if not valid_prods:
-            return []  # All filtered out (destructive selection)
+            return [], []  # All filtered out (destructive selection)
 
         # Calculate weights
         weights = []
@@ -944,10 +986,13 @@ class Generator:
                 chosen = prod
                 break
 
-        return self.generate_sequence(chosen.sequence, env)
+        tokens, seq_emitted = self.generate_sequence(chosen.sequence, env)
+        # Combine emitted labels from production definition and sequence generation
+        all_emitted = chosen.emitted_labels + seq_emitted
+        return tokens, all_emitted
 
-    def generate_sequence(self, sequence: Sequence, env: Environment) -> List[str]:
-        """Generate from a sequence of atoms."""
+    def generate_sequence(self, sequence: Sequence, env: Environment) -> Tuple[List[str], List[str]]:
+        """Generate from a sequence of atoms. Returns (tokens, emitted_labels)."""
         atoms = sequence.atoms
 
         # Handle permutation: collect permutable atoms and shuffle their positions
@@ -967,26 +1012,37 @@ class Generator:
                 atoms[idx] = permutable_atoms[i]
 
         result = []
-        for atom in atoms:
-            result.extend(self.generate_atom(atom, env))
-        return result
+        all_emitted = []
+        current_env = env
 
-    def generate_atom(self, atom: ASTNode, env: Environment) -> List[str]:
-        """Generate from a single atom."""
+        for atom in atoms:
+            tokens, emitted = self.generate_atom(atom, current_env)
+            result.extend(tokens)
+            all_emitted.extend(emitted)
+
+            # Forward propagation: if this atom emitted labels, add them to env for subsequent atoms
+            if emitted:
+                new_labels = current_env.active_labels | set(emitted)
+                current_env = current_env.child(new_labels)
+
+        return result, all_emitted
+
+    def generate_atom(self, atom: ASTNode, env: Environment) -> Tuple[List[str], List[str]]:
+        """Generate from a single atom. Returns (tokens, emitted_labels)."""
         if isinstance(atom, Terminal):
-            return [atom.value]
+            return [atom.value], []
 
         elif isinstance(atom, NonTerminal):
             return self.generate_nonterm(atom.name, env)
 
         elif isinstance(atom, Epsilon):
-            return []
+            return [], []
 
         elif isinstance(atom, Concat):
-            return ['\x00']  # Special concat marker
+            return ['\x00'], []  # Special concat marker
 
         elif isinstance(atom, Capitalize):
-            return ['\x01']  # Special capitalize marker
+            return ['\x01'], []  # Special capitalize marker
 
         elif isinstance(atom, SubProduction):
             return self.generate_subproduction(atom, env)
@@ -997,11 +1053,11 @@ class Generator:
         else:
             raise GeneratorError(f"Unknown atom type: {type(atom)}")
 
-    def generate_subproduction(self, sub: SubProduction, env: Environment) -> List[str]:
-        """Generate from a subproduction."""
+    def generate_subproduction(self, sub: SubProduction, env: Environment) -> Tuple[List[str], List[str]]:
+        """Generate from a subproduction. Returns (tokens, emitted_labels)."""
         # Handle optional: 50% chance of epsilon
         if sub.is_optional and random.random() < 0.5:
-            return []
+            return [], []
 
         # Create local environment with declarations
         local_env = env.child()
@@ -1011,12 +1067,17 @@ class Generator:
         # Handle iteration
         if sub.is_iterable:
             result = []
+            all_emitted = []
             # At least one iteration
-            result.extend(self.generate_productions(sub.productions, local_env))
+            tokens, emitted = self.generate_productions(sub.productions, local_env)
+            result.extend(tokens)
+            all_emitted.extend(emitted)
             # 50% chance for each additional iteration
             while random.random() < 0.5:
-                result.extend(self.generate_productions(sub.productions, local_env))
-            return result
+                tokens, emitted = self.generate_productions(sub.productions, local_env)
+                result.extend(tokens)
+                all_emitted.extend(emitted)
+            return result, all_emitted
 
         # Handle permutation - this is handled at sequence level, not here
         # Permutable subproductions are markers; actual permutation happens in generate_sequence
@@ -1024,8 +1085,8 @@ class Generator:
         # Normal generation
         return self.generate_productions(sub.productions, local_env)
 
-    def generate_selection(self, sel: Selection, env: Environment) -> List[str]:
-        """Generate from a selection."""
+    def generate_selection(self, sel: Selection, env: Environment) -> Tuple[List[str], List[str]]:
+        """Generate from a selection. Returns (tokens, emitted_labels)."""
         if sel.reset:
             # Reset selection: clear active labels
             new_env = env.child(set())
@@ -1059,26 +1120,79 @@ class Generator:
 
 
 # =============================================================================
+# INCLUDE PREPROCESSING
+# =============================================================================
+
+INCLUDE_PATTERN = re.compile(r'^[ \t]*@include[ \t]+"([^"\n]+)"[ \t]*$', re.MULTILINE)
+
+def preprocess_includes(source: str, base_path: Optional[str] = None,
+                        included: Optional[Set[str]] = None) -> str:
+    """
+    Expand @include directives, recursively.
+
+    A directive must stand on its own line: @include "path/to/file.grm".
+    Relative paths are resolved from base_path (the current directory when
+    base_path is None). Each file is included at most once, which also
+    prevents include cycles.
+
+    Args:
+        source: The grammar source code
+        base_path: Base directory for resolving relative paths
+        included: Absolute paths of the files already included
+
+    Returns:
+        The source with all includes expanded
+    """
+    if included is None:
+        included = set()
+
+    def replace_include(match):
+        filename = match.group(1)
+        filepath = os.path.join(base_path or '', filename)
+        abs_path = os.path.abspath(filepath)
+
+        if abs_path in included:
+            return ''
+        included.add(abs_path)
+
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                included_source = f.read()
+        except FileNotFoundError:
+            line = source.count('\n', 0, match.start()) + 1
+            raise LexerError(f"Include file not found: {filename}", line, 1)
+
+        return preprocess_includes(included_source, os.path.dirname(abs_path), included)
+
+    return INCLUDE_PATTERN.sub(replace_include, source)
+
+
+# =============================================================================
 # PUBLIC API
 # =============================================================================
 
 class Polygen:
     """Main Polygen class for parsing and generating from grammars."""
 
-    def __init__(self, source: str):
+    def __init__(self, source: str, base_path: Optional[str] = None):
         """
         Initialize Polygen with a grammar source.
 
         Args:
             source: The PML grammar source code
+            base_path: Base directory for resolving @include paths
         """
         self.source = source
+        self.base_path = base_path
         self.grammar = None
         self._parse()
 
     def _parse(self):
         """Parse the grammar source."""
-        lexer = Lexer(self.source)
+        # Preprocess includes
+        processed_source = preprocess_includes(self.source, self.base_path)
+
+        lexer = Lexer(processed_source)
         tokens = lexer.tokenize()
         parser = Parser(tokens)
         self.grammar = parser.parse()
@@ -1125,7 +1239,9 @@ class Polygen:
             A Polygen instance
         """
         with open(path, 'r', encoding='utf-8') as f:
-            return cls(f.read())
+            source = f.read()
+        base_path = os.path.dirname(os.path.abspath(path))
+        return cls(source, base_path)
 
 
 def main():

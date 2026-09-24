@@ -38,6 +38,10 @@ Questa implementazione supporta tutte le feature principali del linguaggio PML (
 - ✅ Deep unfolding `>>...<<`, inclusi i non-terminali
 - ✅ Folding `<(...)` e `<Symbol`
 
+### Estensioni v2
+- ✅ Emitted labels (`#label`) per propagare label agli atomi successivi
+- ✅ Direttiva `@include` per grammatiche modulari
+
 ## Feature non implementate
 
 Le seguenti feature di **validazione statica** (Sezione 4 della spec) non sono implementate:
@@ -288,6 +292,73 @@ S ::= Animal.(+big|--small) ;
 Animal ::= big: elephant | big: whale | small: ant | small: bee ;
 (* big è molto più probabile di small *)
 ```
+
+### Emitted labels (estensione v2)
+
+Una produzione può terminare con uno o più `#label`. Quando viene scelta,
+le label emesse si aggiungono a quelle attive per gli atomi **successivi**
+della sequenza che la contiene, esattamente come se fossero state
+selezionate con `.label`.
+
+```polygen
+S ::= Luogo Azione ;
+Luogo ::= nella foresta #natura | in citta #urbano ;
+Azione ::= natura: cammina | urbano: prende un taxi | corre ;
+
+(* "nella foresta cammina", "nella foresta corre",
+   "in citta prende un taxi", "in citta corre".
+   Mai "nella foresta prende un taxi" né "in citta cammina". *)
+```
+
+Regole:
+
+- la propagazione è solo in avanti: gli atomi che precedono non sono
+  influenzati;
+- le label emesse risalgono attraverso non-terminali e subproduzioni fino
+  alla sequenza che li contiene (qui `Luogo` emette verso `Azione`);
+- i nomi seguono la regola lessicale delle label, quindi anche `#1`, `#3`
+  sono validi;
+- l'unfolding (`>Luogo`) e il binding forte (`X := ...`) preservano
+  l'effetto delle label emesse.
+
+Attenzione: come per `.label`, una label attiva scarta **tutte** le
+produzioni etichettate con label diverse, anche se non c'entrano nulla con
+quella emessa. Dopo `#natura`, una regola come
+`Verb ::= (inf: to) eat (ing: ^ing) ;` produce solo `eat`. Se serve, usa
+il reset `Verb.` per generare un simbolo senza label attive.
+
+### Include (estensione v2)
+
+La direttiva `@include "file.grm"` inserisce il contenuto di un altro
+file. Deve stare su una riga a sé e il path va tra doppi apici. I path
+relativi sono risolti dalla directory del file che contiene la direttiva
+(dalla directory corrente se la grammatica è passata come stringa senza
+`base_path`).
+
+```polygen
+(* vocabolario.grm *)
+Animale ::= gatto | cane | coniglio ;
+Colore ::= rosso | blu | verde ;
+```
+
+```polygen
+(* main.grm *)
+@include "vocabolario.grm"
+
+S ::= il Animale Colore ;
+```
+
+Ogni file viene incluso al massimo una volta: le inclusioni ripetute e i
+cicli vengono ignorati.
+
+Limite noto: l'inclusione avviene sul testo prima dell'analisi lessicale,
+quindi i numeri di riga degli errori di sintassi successivi a un
+`@include` si riferiscono al testo già espanso, non al file originale.
+
+Nota di sicurezza: `@include` accetta path assoluti e `..`, quindi può
+leggere qualsiasi file accessibile al processo. Non caricare grammatiche
+di provenienza non fidata (per esempio inviate da utenti di un servizio
+web) senza restringere i path consentiti.
 
 ## Esempi
 
