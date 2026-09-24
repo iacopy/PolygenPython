@@ -378,6 +378,19 @@ class TestBinding:
         # Dovrebbe generare solo valori uguali
         assert generations == {"apple and apple", "orange and orange"}
 
+    def test_strong_binding_shared_across_scopes(self, seeded):
+        """Il valore sospeso è condiviso da tutte le occorrenze nello scope."""
+        grammar = '''
+        S ::= (Fruit) and Other ;
+        Other ::= Fruit ;
+        Fruit := apple | orange ;
+        '''
+        pg = Polygen(grammar)
+
+        generations = {pg.generate() for _ in range(50)}
+
+        assert generations == {"apple and apple", "orange and orange"}
+
     def test_strong_binding_with_recursion(self, seeded):
         """Test binding forte con ricorsione."""
         grammar = '''
