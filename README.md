@@ -33,10 +33,10 @@ Questa implementazione supporta tutte le feature principali del linguaggio PML (
 - ✅ Iterazione `(...)+`
 - ✅ Permutazione `{...}`
 - ✅ Generazione posizionale (`,`)
-- ✅ Unfolding di subproduzioni `>(...)`
+- ✅ Unfolding di subproduzioni tonde, opzionali e permutabili
 - ✅ Unfolding di non-terminali `>Symbol`
-- ✅ Deep unfolding `>>...<<`
-- ✅ Folding `<` (previene unfolding in deep unfold)
+- ✅ Deep unfolding `>>...<<`, inclusi i non-terminali
+- ✅ Folding `<(...)` e `<Symbol`
 
 ## Feature non implementate
 
@@ -69,7 +69,7 @@ Per eseguire i test è necessario pytest:
 
 ```bash
 pip install pytest
-python -m pytest test_polygen_pytest.py -v
+python -m pytest -v
 ```
 
 ## Utilizzo
@@ -236,23 +236,48 @@ S ::= he,she is a handsome,pretty act ^ or,ress ;
 
 ### Unfolding
 
-```polygen
-(* > appiattisce le probabilità di una subproduzione *)
-S ::= >(walk | pass) through | look at | >(go | come | move) to ;
-(* Ogni verbo ha la stessa probabilità invece di essere raggruppato *)
+L'operatore `>` appiattisce le alternative al livello della produzione
+che lo contiene, modificandone la distribuzione di probabilità senza
+cambiare i possibili risultati.
 
-(* > può unfoldare anche non-terminali *)
+```polygen
+(* Unfolding di subproduzioni tonde *)
+S ::= >(walk | pass) through | look at | >(go | come | move) to ;
+(* Tutti i verbi hanno la stessa probabilità. *)
+
+(* Unfolding di un non-terminale *)
 S ::= ugly cat | nice >Dog ;
 Dog ::= poodle | beagle | terrier ;
-(* Ogni opzione (ugly cat, nice poodle, nice beagle, nice terrier) ha 1/4 *)
+(* Le quattro alternative risultano equiprobabili. *)
 
-(* >> ... << applica unfolding ricorsivo a tutto il contenuto *)
-S ::= >> the (dog | (big | small) cat) | a (cow | Animal) << ;
-(* Tutto viene appiattito *)
+(* Un optional unfolded conserva anche l'alternativa epsilon. *)
+S ::= >[a] x | y ;
+(* Produce "a x", "x" oppure "y". *)
 
-(* < previene l'unfolding dentro >> << *)
-S ::= >> a (cow | <Animal) << ;
-(* Animal resta raggruppato *)
+(* Le permutazioni vengono applicate prima dell'unfolding. *)
+S ::= >{a | b} {c} ;
+(* Produce "a c", "b c", "c a" oppure "c b". *)
+```
+
+Il deep unfolding `>>...<<` applica ricorsivamente l'unfolding al
+contenuto. I non-terminali vengono espansi di un livello; le
+subproduzioni contenute nelle loro definizioni restano raggruppate.
+
+```polygen
+S ::= >> A | b << ;
+A ::= a | c ;
+(* a, b e c sono equiprobabili. *)
+```
+
+Il prefisso `<` impedisce il deep unfolding dell'atomo seguente. Può
+proteggere sia una subproduzione (`<(...)`) sia un non-terminale
+(`<Symbol`).
+
+```polygen
+S ::= >> <A | b << ;
+A ::= a | c ;
+(* A e b restano due alternative: b ha probabilità 1/2,
+   mentre a e c hanno probabilità 1/4 ciascuna. *)
 ```
 
 ### Selezione multipla con pesi
