@@ -288,6 +288,8 @@ class Terminal(ASTNode):
 @dataclass
 class NonTerminal(ASTNode):
     name: str
+    unfold: bool = False
+    fold: bool = False
 
 
 @dataclass
@@ -517,14 +519,8 @@ class Parser:
             atom = Terminal(self.advance().value)
         elif self.match(TokenType.NONTERM):
             name = self.advance().value
-            atom = NonTerminal(name)
-            if unfold:
-                # Wrap in a marker for unfolding
-                atom = SubProduction(
-                    Productions([Production(Sequence([atom]))]),
-                    unfold=True
-                )
-                unfold = False
+            atom = NonTerminal(name, unfold=unfold, fold=fold)
+            unfold = fold = False
         elif self.match(TokenType.CARET):
             self.advance()
             atom = Concat()
@@ -709,10 +705,14 @@ class Preprocessor:
         seq = prod.sequence
         atoms = seq.atoms
 
-        # Find atoms that need unfolding (SubProduction with unfold=True, or NonTerminal preceded by >)
+        # Find the first atom that must be unfolded at this level.
         unfold_index = None
         for i, atom in enumerate(atoms):
-            if isinstance(atom, SubProduction) and atom.unfold and not atom.fold:
+            if (
+                isinstance(atom, (SubProduction, NonTerminal))
+                and atom.unfold
+                and not atom.fold
+            ):
                 unfold_index = i
                 break
 
@@ -723,17 +723,25 @@ class Preprocessor:
         # Get the atom to unfold
         atom = atoms[unfold_index]
 
-        # Get productions to unfold
+        # Get the productions to unfold. A non-terminal reached through deep
+        # unfolding is expanded by one level only, as required by the spec.
+        preserve_permutation = False
+        local_declarations = []
         if isinstance(atom, SubProduction):
-            inner_prods = atom.productions.items
-            # If it has a NonTerminal inside that should be unfolded, handle that
-            if len(inner_prods) == 1 and len(inner_prods[0].sequence.atoms) == 1:
-                inner_atom = inner_prods[0].sequence.atoms[0]
-                if isinstance(inner_atom, NonTerminal):
-                    # This is >NonTerm - unfold the non-terminal
-                    decl = self.declarations.get(inner_atom.name)
-                    if decl:
-                        inner_prods = decl.productions.items
+            inner_prods = list(atom.productions.items)
+            preserve_permutation = atom.is_permutable
+            local_declarations = atom.declarations
+
+            # [P] behaves like (P | _); unfolding must not lose epsilon.
+            if atom.is_optional:
+                inner_prods.append(Production(Sequence([Epsilon()])))
+        else:
+            decl = self.declarations.get(atom.name)
+            if decl is None:
+                return [prod]
+            inner_prods = self.process_productions(
+                decl.productions, in_deep_unfold=False
+            ).items
 
         # Create new productions by distributing
         result = []
@@ -744,8 +752,20 @@ class Preprocessor:
             inner_atoms = inner_prod.sequence.atoms
             inner_label = inner_prod.sequence.label
 
-            # Combine: prefix + inner_atoms + suffix
-            new_atoms = list(prefix) + list(inner_atoms) + list(suffix)
+            if preserve_permutation:
+                # Permutation precedes unfolding. Keep a one-production
+                # permutable wrapper so the generator can still swap it with
+                # the other permutable atoms in the surrounding sequence.
+                replacement = SubProduction(
+                    Productions([Production(Sequence(list(inner_atoms)))]),
+                    declarations=local_declarations,
+                    is_permutable=True,
+                )
+                replacement_atoms = [replacement]
+            else:
+                replacement_atoms = list(inner_atoms)
+
+            new_atoms = list(prefix) + replacement_atoms + list(suffix)
 
             # Inherit label from inner if present, else from outer
             new_label = inner_label if inner_label else seq.label
@@ -783,6 +803,9 @@ class Preprocessor:
             return Selection(self.process_atom(atom.atom, in_deep_unfold), atom.labels, atom.reset)
         elif isinstance(atom, PositionalGroup):
             return PositionalGroup([self.process_atom(a, in_deep_unfold) for a in atom.atoms])
+        elif isinstance(atom, NonTerminal):
+            should_unfold = atom.unfold or (in_deep_unfold and not atom.fold)
+            return NonTerminal(atom.name, unfold=should_unfold, fold=atom.fold)
         else:
             return atom
 

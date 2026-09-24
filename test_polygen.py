@@ -603,6 +603,24 @@ class TestUnfolding:
 
         assert generations == {"prefix a suffix", "prefix b suffix"}
 
+    def test_optional_unfolding_preserves_epsilon(self, seeded):
+        """Un optional unfolded mantiene l'alternativa epsilon."""
+        grammar = 'S ::= >[a] x | y ;'
+        pg = Polygen(grammar)
+
+        generations = {pg.generate() for _ in range(100)}
+
+        assert generations == {"a x", "x", "y"}
+
+    def test_permutation_happens_before_unfolding(self, seeded):
+        """Una subproduzione permutabile viene permutata prima dell'unfolding."""
+        grammar = 'S ::= >{a | b} {c} ;'
+        pg = Polygen(grammar)
+
+        generations = {pg.generate() for _ in range(100)}
+
+        assert generations == {"a c", "b c", "c a", "c b"}
+
 
 class TestDeepUnfolding:
     """Test del deep unfolding (>> ... <<)."""
@@ -638,6 +656,32 @@ class TestDeepUnfolding:
         # a dovrebbe essere ~50%, b+c ~50%
         assert 120 < counts["a"] < 180
         assert 120 < counts["b"] + counts["c"] < 180
+
+    def test_deep_unfold_expands_nonterminal(self, seeded):
+        """Il deep unfolding espande i non-terminali di un livello."""
+        grammar = 'S ::= >> A | b << ; A ::= a | c ;'
+        pg = Polygen(grammar)
+
+        counts = {"a": 0, "b": 0, "c": 0}
+        for _ in range(600):
+            counts[pg.generate()] += 1
+
+        # Dopo l'unfolding a, b e c sono alternative equiprobabili.
+        assert all(160 < count < 240 for count in counts.values())
+
+    def test_folding_prevents_nonterminal_unfold(self, seeded):
+        """<Symbol impedisce l'espansione del simbolo nel deep unfolding."""
+        grammar = 'S ::= >> <A | b << ; A ::= a | c ;'
+        pg = Polygen(grammar)
+
+        counts = {"a": 0, "b": 0, "c": 0}
+        for _ in range(600):
+            counts[pg.generate()] += 1
+
+        # A e b restano due alternative; a e c dividono la quota di A.
+        assert 250 < counts["b"] < 350
+        assert 100 < counts["a"] < 200
+        assert 100 < counts["c"] < 200
 
 
 # =============================================================================
