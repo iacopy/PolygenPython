@@ -38,6 +38,12 @@ Questa implementazione supporta tutte le feature principali del linguaggio PML (
 - ✅ Deep unfolding `>>...<<`, inclusi i non-terminali
 - ✅ Folding `<(...)` e `<Symbol`
 
+### Validazione della grammatica
+- ✅ Riferimenti a simboli non definiti, inclusi i rami non generati
+- ✅ Definizioni duplicate nello stesso scope (lo shadowing locale è consentito)
+- ✅ Posizione riga:colonna per gli errori di validazione
+- ✅ Controllo del simbolo iniziale prima della generazione
+
 ## Feature non implementate
 
 Le seguenti feature di **validazione statica** (Sezione 4 della spec) non sono implementate:
@@ -83,6 +89,9 @@ python polygen.py mia_grammatica.grm
 # Genera 10 frasi
 python polygen.py mia_grammatica.grm -n 10
 
+# Verifica la grammatica senza generare frasi (anche con -s MioSimbolo)
+python polygen.py mia_grammatica.grm --check
+
 # Mostra info sulla grammatica (simbolo I)
 python polygen.py mia_grammatica.grm -i
 
@@ -104,6 +113,10 @@ S ::= hello | goodbye ;
 '''
 pg = Polygen(grammar)
 print(pg.generate())  # "hello" o "goodbye"
+
+# La costruzione controlla riferimenti e definizioni in tutta la grammatica.
+# Si può verificare anche il simbolo iniziale senza generare testo:
+pg.validate()
 
 # Da file
 pg = Polygen.from_file('mia_grammatica.grm')

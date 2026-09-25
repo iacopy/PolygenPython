@@ -290,6 +290,8 @@ class NonTerminal(ASTNode):
     name: str
     unfold: bool = False
     fold: bool = False
+    line: int = 0
+    col: int = 0
 
 
 @dataclass
@@ -362,6 +364,8 @@ class Declaration(ASTNode):
     name: str
     productions: Productions
     is_strong: bool = False  # := vs ::=
+    line: int = 0
+    col: int = 0
 
 
 @dataclass
@@ -436,7 +440,7 @@ class Parser:
             raise ParserError("Expected ::= or :=", self.peek())
 
         productions = self.parse_productions()
-        return Declaration(name, productions, is_strong)
+        return Declaration(name, productions, is_strong, name_token.line, name_token.col)
 
     def parse_productions(self) -> Productions:
         """Parse pipe-separated productions."""
@@ -518,8 +522,9 @@ class Parser:
         if self.match(TokenType.TERM):
             atom = Terminal(self.advance().value)
         elif self.match(TokenType.NONTERM):
-            name = self.advance().value
-            atom = NonTerminal(name, unfold=unfold, fold=fold)
+            name_token = self.advance()
+            atom = NonTerminal(name_token.value, unfold=unfold, fold=fold,
+                               line=name_token.line, col=name_token.col)
             unfold = fold = False
         elif self.match(TokenType.CARET):
             self.advance()
@@ -624,6 +629,49 @@ class Parser:
         return declarations, productions
 
 
+class ValidationError(Exception):
+    def __init__(self, message: str, line: Optional[int] = None, col: Optional[int] = None):
+        location = f" at {line}:{col}" if line is not None and col is not None else ""
+        super().__init__(f"Validation error{location}: {message}")
+
+
+class Validator:
+    """Check references and duplicate bindings in each lexical scope."""
+
+    def validate(self, grammar: Grammar):
+        self._validate_scope(grammar.declarations, {})
+
+    def _validate_scope(self, declarations: List[Declaration], outer: Dict[str, Declaration]):
+        local = {}
+        for decl in declarations:
+            if decl.name in local:
+                raise ValidationError(f"Duplicate symbol: {decl.name}", decl.line, decl.col)
+            local[decl.name] = decl
+
+        visible = {**outer, **local}
+        for decl in declarations:
+            self._validate_productions(decl.productions, visible)
+        return visible
+
+    def _validate_productions(self, productions: Productions, visible: Dict[str, Declaration]):
+        for production in productions.items:
+            for atom in production.sequence.atoms:
+                self._validate_atom(atom, visible)
+
+    def _validate_atom(self, atom: ASTNode, visible: Dict[str, Declaration]):
+        if isinstance(atom, NonTerminal):
+            if atom.name not in visible:
+                raise ValidationError(f"Undefined symbol: {atom.name}", atom.line, atom.col)
+        elif isinstance(atom, SubProduction):
+            local_visible = self._validate_scope(atom.declarations, visible)
+            self._validate_productions(atom.productions, local_visible)
+        elif isinstance(atom, Selection):
+            self._validate_atom(atom.atom, visible)
+        elif isinstance(atom, PositionalGroup):
+            for item in atom.atoms:
+                self._validate_atom(item, visible)
+
+
 class Preprocessor:
     """Preprocesses the AST to handle syntactic transformations."""
 
@@ -640,7 +688,8 @@ class Preprocessor:
         new_declarations = []
         for decl in grammar.declarations:
             new_prods = self.process_productions(decl.productions, in_deep_unfold=False)
-            new_declarations.append(Declaration(decl.name, new_prods, decl.is_strong))
+            new_declarations.append(Declaration(decl.name, new_prods, decl.is_strong,
+                                                decl.line, decl.col))
 
         return Grammar(new_declarations)
 
@@ -790,7 +839,8 @@ class Preprocessor:
             new_decls = []
             for decl in atom.declarations:
                 new_prods = self.process_productions(decl.productions, new_in_deep)
-                new_decls.append(Declaration(decl.name, new_prods, decl.is_strong))
+                new_decls.append(Declaration(decl.name, new_prods, decl.is_strong,
+                                             decl.line, decl.col))
 
             new_prods = self.process_productions(atom.productions, new_in_deep)
 
@@ -805,7 +855,8 @@ class Preprocessor:
             return PositionalGroup([self.process_atom(a, in_deep_unfold) for a in atom.atoms])
         elif isinstance(atom, NonTerminal):
             should_unfold = atom.unfold or (in_deep_unfold and not atom.fold)
-            return NonTerminal(atom.name, unfold=should_unfold, fold=atom.fold)
+            return NonTerminal(atom.name, unfold=should_unfold, fold=atom.fold,
+                               line=atom.line, col=atom.col)
         else:
             return atom
 
@@ -1082,10 +1133,16 @@ class Polygen:
         tokens = lexer.tokenize()
         parser = Parser(tokens)
         self.grammar = parser.parse()
+        Validator().validate(self.grammar)
 
         # Preprocess: expand positional generation
         preprocessor = Preprocessor()
         self.grammar = preprocessor.process(self.grammar)
+
+    def validate(self, start_symbol: str = 'S'):
+        """Check that the requested starting symbol can be generated."""
+        if not any(decl.name == start_symbol for decl in self.grammar.declarations):
+            raise ValidationError(f"Undefined start symbol: {start_symbol}")
 
     def generate(self, start_symbol: str = 'S', max_recursion: int = 100) -> str:
         """
@@ -1098,6 +1155,7 @@ class Polygen:
         Returns:
             The generated string
         """
+        self.validate(start_symbol)
         generator = Generator(self.grammar, max_recursion)
         return generator.generate(start_symbol)
 
@@ -1110,7 +1168,7 @@ class Polygen:
         """
         try:
             return self.generate('I')
-        except GeneratorError:
+        except ValidationError:
             return ""
 
     @classmethod
@@ -1143,10 +1201,15 @@ def main():
                        help='Starting symbol (default: S)')
     parser.add_argument('-i', '--info', action='store_true',
                        help='Show grammar info')
+    parser.add_argument('--check', action='store_true',
+                       help='Validate the grammar without generating text')
     parser.add_argument('-S', '--seed', type=int,
                        help='Random seed for reproducibility')
 
     args = parser.parse_args()
+
+    if args.check and not args.file:
+        parser.error('--check requires a grammar file')
 
     if args.seed is not None:
         random.seed(args.seed)
@@ -1155,7 +1218,10 @@ def main():
         try:
             pg = Polygen.from_file(args.file)
 
-            if args.info:
+            if args.check:
+                pg.validate(args.start)
+                print("Grammar references and definitions are valid")
+            elif args.info:
                 info = pg.info()
                 if info:
                     print(info)
@@ -1165,7 +1231,7 @@ def main():
                 for _ in range(args.count):
                     print(pg.generate(args.start))
 
-        except (LexerError, ParserError, GeneratorError) as e:
+        except (LexerError, ParserError, ValidationError, GeneratorError) as e:
             print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
         except FileNotFoundError:
