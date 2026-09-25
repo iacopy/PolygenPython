@@ -5,8 +5,11 @@ poi verifica con assert che siano state generate tutte le opzioni attese.
 """
 
 import random
+import subprocess
+import sys
+from pathlib import Path
 import pytest
-from polygen import Polygen, LexerError, ParserError, GeneratorError
+from polygen import Polygen, LexerError, ParserError, GeneratorError, ValidationError
 
 
 # =============================================================================
@@ -705,12 +708,55 @@ class TestErrors:
     """Test della gestione errori."""
 
     def test_undefined_symbol(self):
-        """Test errore per simbolo non definito."""
-        grammar = 'S ::= A ;'
-        pg = Polygen(grammar)
+        """Un simbolo non definito viene trovato prima di generare."""
+        with pytest.raises(ValidationError, match=r"1:7: Undefined symbol: A"):
+            Polygen('S ::= A ;')
 
-        with pytest.raises(GeneratorError, match="Undefined symbol"):
+    def test_undefined_symbol_in_unselected_branch(self):
+        with pytest.raises(ValidationError, match=r"2:5: Undefined symbol: Missing"):
+            Polygen('S ::= ok |\n    Missing ;')
+
+    def test_undefined_symbol_in_local_declaration(self):
+        with pytest.raises(ValidationError, match=r"1:14: Undefined symbol: Missing"):
+            Polygen('S ::= (X ::= Missing ; X) ;')
+
+    def test_duplicate_global_declaration(self):
+        with pytest.raises(ValidationError, match=r"2:1: Duplicate symbol: S"):
+            Polygen('S ::= first ;\nS ::= second ;')
+
+    def test_duplicate_local_declaration(self):
+        with pytest.raises(ValidationError, match=r"1:18: Duplicate symbol: X"):
+            Polygen('S ::= (X ::= a ; X ::= b ; X) ;')
+
+    def test_local_shadowing_is_valid(self):
+        pg = Polygen('S ::= (X ::= inner ; X) X ; X ::= outer ;')
+        assert pg.generate() == 'inner outer'
+
+    def test_custom_start_symbol(self):
+        pg = Polygen('Other ::= hello ;')
+        assert pg.generate('Other') == 'hello'
+        with pytest.raises(ValidationError, match="Undefined start symbol: S"):
             pg.generate()
+
+    def test_check_command(self, tmp_path):
+        grammar = tmp_path / 'sample.grm'
+        grammar.write_text('S ::= a ;', encoding='utf-8')
+        result = subprocess.run([sys.executable, str(Path(__file__).with_name('polygen.py')),
+                                 str(grammar), '--check'], capture_output=True, text=True)
+        assert result.returncode == 0
+        assert result.stdout == 'Grammar references and definitions are valid\n'
+
+        grammar.write_text('S ::= a | Missing ;', encoding='utf-8')
+        result = subprocess.run([sys.executable, str(Path(__file__).with_name('polygen.py')),
+                                 str(grammar), '--check'], capture_output=True, text=True)
+        assert result.returncode == 1
+        assert 'Undefined symbol: Missing' in result.stderr
+        assert result.stdout == ''
+
+        result = subprocess.run([sys.executable, str(Path(__file__).with_name('polygen.py')),
+                                 str(grammar), '-n', '5'], capture_output=True, text=True)
+        assert result.returncode == 1
+        assert result.stdout == ''
 
     def test_lexer_error_illegal_char(self):
         """Test errore lessicale per carattere illegale."""
