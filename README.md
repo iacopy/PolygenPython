@@ -41,6 +41,7 @@ Questa implementazione supporta tutte le feature principali del linguaggio PML (
 ### Validazione della grammatica
 - ✅ Riferimenti a simboli non definiti, inclusi i rami non generati
 - ✅ Definizioni duplicate nello stesso scope (lo shadowing locale è consentito)
+- ✅ Unfolding ricorsivi, anche attraverso più simboli o scope locali
 - ✅ Posizione riga:colonna per gli errori di validazione
 - ✅ Controllo del simbolo iniziale prima della generazione
 
@@ -51,7 +52,6 @@ Le seguenti feature di **validazione statica** (Sezione 4 della spec) non sono i
 ### Errori non rilevati
 
 - Cyclic recursions (ricorsioni infinite)
-- Recursive unfoldings (unfolding ricorsivi)
 - Epsilon-productions che rendono la grammatica inutile
 
 ### Warning non implementati
@@ -119,6 +119,7 @@ pg = Polygen(grammar)
 print(pg.generate())  # "hello" o "goodbye"
 
 # La costruzione controlla riferimenti e definizioni in tutta la grammatica.
+# Rifiuta anche i cicli di unfolding prima del preprocessing.
 # Si può verificare anche il simbolo iniziale senza generare testo:
 pg.validate()
 
@@ -256,6 +257,13 @@ S ::= he,she is a handsome,pretty act ^ or,ress ;
 L'operatore `>` appiattisce le alternative al livello della produzione
 che lo contiene, modificandone la distribuzione di probabilità senza
 cambiare i possibili risultati.
+
+Un ciclo come `S ::= >A ; A ::= >S ;` viene segnalato con riga e colonna
+prima del preprocessing, anche usando `--check`. Lo stesso vale per un
+ciclo dentro una dichiarazione locale, per esempio
+`S ::= (A ::= >A ; A) ;`. Un riferimento ricorsivo senza `>` non viene
+classificato come unfolding ricorsivo; l'analisi dei cicli durante la
+generazione è separata.
 
 ```polygen
 (* Unfolding di subproduzioni tonde *)
