@@ -581,6 +581,38 @@ class TestPositionalGeneration:
 class TestUnfolding:
     """Test dell'unfolding (>)."""
 
+    @pytest.mark.parametrize('grammar, location', [
+        ('S ::= >S ;', '1:8'),
+        ('S ::= >A ;\nA ::= >B ;\nB ::= >S ;', '3:8'),
+        ('S ::= (A ::= >A ; A) ;', '1:15'),
+        ('S ::= (A ::= >B ; B ::= >A ; A) ;', '1:26'),
+        ('S ::= >> A << ; A ::= >S ;', '1:24'),
+        ('S ::= >> (A ::= S ; A) << ;', '1:17'),
+    ])
+    def test_recursive_unfolding_is_rejected(self, grammar, location):
+        with pytest.raises(ValidationError, match=f'{location}: Recursive unfolding'):
+            Polygen(grammar)
+
+    def test_ordinary_recursion_is_not_unfolding(self):
+        pg = Polygen('S ::= end | A ; A ::= S ;')
+        assert pg.generate(max_recursion=10) == 'end'
+
+    def test_local_unfolding_uses_local_declaration(self):
+        pg = Polygen('S ::= (A ::= local ; >A) ; A ::= global ;')
+        assert pg.generate() == 'local'
+
+    def test_shadowed_global_is_not_a_recursive_unfolding(self):
+        pg = Polygen('S ::= (A ::= local ; >A) ; A ::= >S ;')
+        assert pg.generate() == 'local'
+
+    def test_global_unfolding_keeps_its_lexical_scope(self):
+        pg = Polygen('S ::= (X ::= local ; >A) ; A ::= >X ; X ::= global ;')
+        assert pg.generate() == 'global'
+
+    def test_folding_blocks_deep_unfolding_cycle(self):
+        pg = Polygen('S ::= >> <A << ; A ::= >S | end ;')
+        assert pg.generate(max_recursion=100) == 'end'
+
     def test_subproduction_unfolding(self, seeded):
         """Test unfolding di subproduzioni."""
         grammar = 'S ::= >(a | b) | c ;'
@@ -752,6 +784,16 @@ class TestErrors:
         assert result.returncode == 1
         assert 'Undefined symbol: Missing' in result.stderr
         assert result.stdout == ''
+
+    def test_check_rejects_recursive_unfolding(self, tmp_path):
+        grammar = tmp_path / 'recursive.grm'
+        grammar.write_text('S ::= >A ;\nA ::= >S ;', encoding='utf-8')
+        command = [sys.executable, str(Path(__file__).with_name('polygen.py')), str(grammar)]
+        for args in (['--check'], ['-n', '1']):
+            result = subprocess.run(command + args, capture_output=True, text=True, timeout=5)
+            assert result.returncode == 1
+            assert 'Recursive unfolding: S' in result.stderr
+            assert result.stdout == ''
 
         result = subprocess.run([sys.executable, str(Path(__file__).with_name('polygen.py')),
                                  str(grammar), '-n', '5'], capture_output=True, text=True)

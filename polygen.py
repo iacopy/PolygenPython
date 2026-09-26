@@ -665,7 +665,10 @@ class Validator:
     """Check references and duplicate bindings in each lexical scope."""
 
     def validate(self, grammar: Grammar):
+        self.scopes = {}
         self._validate_scope(grammar.declarations, {})
+        for decl in grammar.declarations:
+            self._check_unfolding(decl, [])
 
     def _validate_scope(self, declarations: List[Declaration], outer: Dict[str, Declaration]):
         local = {}
@@ -676,8 +679,43 @@ class Validator:
 
         visible = {**outer, **local}
         for decl in declarations:
+            self.scopes[id(decl)] = visible
             self._validate_productions(decl.productions, visible)
         return visible
+
+    def _check_unfolding(self, decl: Declaration, active: List[Declaration],
+                         deep: bool = False):
+        """Follow only references expanded during preprocessing."""
+        active.append(decl)
+        scope = self.scopes[id(decl)]
+        try:
+            for production in decl.productions.items:
+                for atom in production.sequence.atoms:
+                    self._check_unfolding_atom(atom, scope, active, deep)
+        finally:
+            active.pop()
+
+    def _check_unfolding_atom(self, atom: ASTNode, scope: Dict[str, Declaration],
+                              active: List[Declaration], deep: bool):
+        if isinstance(atom, NonTerminal):
+            if atom.unfold or (deep and not atom.fold):
+                target = scope[atom.name]
+                if any(target is current for current in active):
+                    raise ValidationError(f"Recursive unfolding: {atom.name}", atom.line, atom.col)
+                self._check_unfolding(target, active)
+        elif isinstance(atom, SubProduction):
+            nested_scope = {**scope, **{decl.name: decl for decl in atom.declarations}}
+            nested_deep = deep or atom.is_deep_unfold
+            for decl in atom.declarations:
+                self._check_unfolding(decl, active, nested_deep)
+            for production in atom.productions.items:
+                for item in production.sequence.atoms:
+                    self._check_unfolding_atom(item, nested_scope, active, nested_deep)
+        elif isinstance(atom, Selection):
+            self._check_unfolding_atom(atom.atom, scope, active, deep)
+        elif isinstance(atom, PositionalGroup):
+            for item in atom.atoms:
+                self._check_unfolding_atom(item, scope, active, deep)
 
     def _validate_productions(self, productions: Productions, visible: Dict[str, Declaration]):
         for production in productions.items:
@@ -701,19 +739,31 @@ class Validator:
 class Preprocessor:
     """Preprocesses the AST to handle syntactic transformations."""
 
-    def __init__(self):
+    def __init__(self, scopes: Dict[int, Dict[str, Declaration]]):
+        self.scopes = scopes
         self.declarations = {}  # name -> Declaration (for unfolding lookups)
+
+    def process_declaration(self, decl: Declaration, in_deep_unfold: bool = False) -> Productions:
+        previous = self.declarations
+        self.declarations = self.scopes[id(decl)]
+        try:
+            return self.process_productions(decl.productions, in_deep_unfold)
+        finally:
+            self.declarations = previous
+
+    def process_local_productions(self, atom: SubProduction, in_deep_unfold: bool) -> Productions:
+        previous = self.declarations
+        self.declarations = {**previous, **{decl.name: decl for decl in atom.declarations}}
+        try:
+            return self.process_productions(atom.productions, in_deep_unfold)
+        finally:
+            self.declarations = previous
 
     def process(self, grammar: Grammar) -> Grammar:
         """Process the grammar, expanding positional generation and unfolding."""
-        # First pass: collect all declarations for lookup
-        for decl in grammar.declarations:
-            self.declarations[decl.name] = decl
-
-        # Second pass: process declarations
         new_declarations = []
         for decl in grammar.declarations:
-            new_prods = self.process_productions(decl.productions, in_deep_unfold=False)
+            new_prods = self.process_declaration(decl)
             new_declarations.append(Declaration(decl.name, new_prods, decl.is_strong,
                                                 decl.line, decl.col))
 
@@ -817,9 +867,7 @@ class Preprocessor:
             decl = self.declarations.get(atom.name)
             if decl is None:
                 return [prod]
-            inner_prods = self.process_productions(
-                decl.productions, in_deep_unfold=False
-            ).items
+            inner_prods = self.process_declaration(decl).items
 
         # Create new productions by distributing
         result = []
@@ -879,11 +927,11 @@ class Preprocessor:
 
             new_decls = []
             for decl in atom.declarations:
-                new_prods = self.process_productions(decl.productions, new_in_deep)
+                new_prods = self.process_declaration(decl, new_in_deep)
                 new_decls.append(Declaration(decl.name, new_prods, decl.is_strong,
                                              decl.line, decl.col))
 
-            new_prods = self.process_productions(atom.productions, new_in_deep)
+            new_prods = self.process_local_productions(atom, new_in_deep)
 
             return SubProduction(
                 new_prods, new_decls,
@@ -1247,10 +1295,11 @@ class Polygen:
         tokens = lexer.tokenize()
         parser = Parser(tokens)
         self.grammar = parser.parse()
-        Validator().validate(self.grammar)
+        validator = Validator()
+        validator.validate(self.grammar)
 
         # Preprocess: expand positional generation
-        preprocessor = Preprocessor()
+        preprocessor = Preprocessor(validator.scopes)
         self.grammar = preprocessor.process(self.grammar)
 
     def validate(self, start_symbol: str = 'S'):
