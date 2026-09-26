@@ -662,13 +662,15 @@ class ValidationError(Exception):
 
 
 class Validator:
-    """Check references and duplicate bindings in each lexical scope."""
+    """Check bindings and termination in each lexical scope."""
 
     def validate(self, grammar: Grammar):
         self.scopes = {}
+        self.declarations = []
         self._validate_scope(grammar.declarations, {})
         for decl in grammar.declarations:
             self._check_unfolding(decl, [])
+        self._check_termination()
 
     def _validate_scope(self, declarations: List[Declaration], outer: Dict[str, Declaration]):
         local = {}
@@ -679,9 +681,56 @@ class Validator:
 
         visible = {**outer, **local}
         for decl in declarations:
+            self.declarations.append(decl)
             self.scopes[id(decl)] = visible
             self._validate_productions(decl.productions, visible)
         return visible
+
+    def _check_termination(self):
+        """Find declarations with no finite derivation, including closed subcycles."""
+        terminating = set()
+        while True:
+            newly_terminating = {
+                id(decl) for decl in self.declarations
+                if id(decl) not in terminating
+                and self._productions_terminate(decl.productions, self.scopes[id(decl)], terminating)
+            }
+            if not newly_terminating:
+                break
+            terminating.update(newly_terminating)
+
+        for decl in reversed(self.declarations):
+            if id(decl) not in terminating:
+                raise ValidationError(f"Non-terminating recursion: {decl.name}", decl.line, decl.col)
+
+    def _productions_terminate(self, productions: Productions, scope: Dict[str, Declaration],
+                               terminating: Set[int]) -> bool:
+        return any(self._sequence_terminates(prod.sequence, scope, terminating)
+                   for prod in productions.items)
+
+    def _sequence_terminates(self, sequence: Sequence, scope: Dict[str, Declaration],
+                             terminating: Set[int]) -> bool:
+        groups = [atom for atom in sequence.atoms if isinstance(atom, PositionalGroup)]
+        if groups and any(len(group.atoms) != len(groups[0].atoms) for group in groups):
+            return True  # Let the preprocessor report the malformed positional groups.
+        positions = range(len(groups[0].atoms)) if groups else (0,)
+        return any(all(self._atom_terminates(
+            atom.atoms[pos] if isinstance(atom, PositionalGroup) else atom,
+            scope, terminating
+        ) for atom in sequence.atoms) for pos in positions)
+
+    def _atom_terminates(self, atom: ASTNode, scope: Dict[str, Declaration],
+                         terminating: Set[int]) -> bool:
+        if isinstance(atom, NonTerminal):
+            return id(scope[atom.name]) in terminating
+        if isinstance(atom, SubProduction):
+            local_scope = {**scope, **{decl.name: decl for decl in atom.declarations}}
+            return atom.is_optional or self._productions_terminate(
+                atom.productions, local_scope, terminating
+            )
+        if isinstance(atom, Selection):
+            return self._atom_terminates(atom.atom, scope, terminating)
+        return True
 
     def _check_unfolding(self, decl: Declaration, active: List[Declaration],
                          deep: bool = False):

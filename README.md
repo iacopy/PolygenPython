@@ -42,6 +42,7 @@ Questa implementazione supporta tutte le feature principali del linguaggio PML (
 - ✅ Riferimenti a simboli non definiti, inclusi i rami non generati
 - ✅ Definizioni duplicate nello stesso scope (lo shadowing locale è consentito)
 - ✅ Unfolding ricorsivi, anche attraverso più simboli o scope locali
+- ✅ Cicli di generazione senza via d'uscita, anche in sottocicli e scope locali
 - ✅ Posizione riga:colonna per gli errori di validazione
 - ✅ Controllo del simbolo iniziale prima della generazione
 
@@ -51,7 +52,6 @@ Le seguenti feature di **validazione statica** (Sezione 4 della spec) non sono i
 
 ### Errori non rilevati
 
-- Cyclic recursions (ricorsioni infinite)
 - Epsilon-productions che rendono la grammatica inutile
 
 ### Warning non implementati
@@ -119,7 +119,7 @@ pg = Polygen(grammar)
 print(pg.generate())  # "hello" o "goodbye"
 
 # La costruzione controlla riferimenti e definizioni in tutta la grammatica.
-# Rifiuta anche i cicli di unfolding prima del preprocessing.
+# Rifiuta anche i cicli di unfolding e generazione senza via d'uscita.
 # Si può verificare anche il simbolo iniziale senza generare testo:
 pg.validate()
 
@@ -133,6 +133,13 @@ print(pg.generate(start_symbol='Frase'))
 # Ottieni info (simbolo I)
 print(pg.info())
 ```
+
+La validazione rifiuta i gruppi di non-terminali senza un percorso di
+terminazione. Per esempio, `S ::= a | A ; A ::= B ; B ::= A ;` fallisce:
+il ramo `a` termina, ma scegliere `A` avvia un sottociclo chiuso. Una
+ricorsione produttiva come `S ::= fine | ancora S ;` rimane valida.
+L'errore indica riga e colonna della dichiarazione coinvolta ed è
+segnalato anche da `--check`.
 
 ## Sintassi delle grammatiche
 
