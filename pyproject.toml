@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "polygen-python"
+version = "0.1.0"
+description = "A Python implementation of the Polygen random text generator"
+readme = "README.md"
+requires-python = ">=3.7"
+
+[tool.setuptools]
+py-modules = ["polygen"]

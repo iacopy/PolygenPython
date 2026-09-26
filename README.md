@@ -70,9 +70,12 @@ Queste sono feature di robustezza e diagnostica, non di generazione. Il core del
 ## Installazione
 
 Non richiede dipendenze esterne per l'uso base. È sufficiente Python 3.7+.
+La versione del pacchetto è dichiarata in `pyproject.toml`.
 
 ```bash
 # Copia il file polygen.py nella tua directory di lavoro
+# Oppure installa il progetto dalla directory del repository:
+python -m pip install .
 ```
 
 Per eseguire i test è necessario pytest:
