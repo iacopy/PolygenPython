@@ -155,6 +155,51 @@ class TestConcatenation:
 class TestEpsilon:
     """Test della produzione vuota epsilon (_)."""
 
+    @pytest.mark.parametrize('grammar', [
+        'S ::= _ ;',
+        'S ::= A ; A ::= A ^ | _ ;',
+        'S ::= A.z ; A ::= x: x | y: y ;',
+        'S ::= (A ::= _ ; A) ;',
+    ])
+    def test_always_empty_start_is_rejected(self, grammar):
+        pg = Polygen(grammar)
+        with pytest.raises(ValidationError, match=r'Epsilon-production: S'):
+            pg.validate()
+
+    @pytest.mark.parametrize('grammar', [
+        'S ::= [a] ;',
+        'S ::= a | _ ;',
+        'S ::= A ; A ::= _ | a ;',
+        'S ::= a | A ; A ::= _ ;',
+        'S ::= (a | _) ;',
+    ])
+    def test_potentially_empty_start_warns(self, grammar):
+        pg = Polygen(grammar)
+        assert 'Potential epsilon-production: S' in pg.validate()[0]
+
+    def test_selection_and_emitted_labels(self):
+        pg = Polygen('S ::= Label A ; Label ::= _ #z | a #x ; A ::= z: _ | x: x ;')
+        assert 'Potential epsilon-production: S' in pg.validate()[0]
+        with pytest.raises(ValidationError, match='Epsilon-production: S'):
+            Polygen('S ::= A.z ; A ::= x: x ;').validate()
+        assert Polygen('S ::= a A.z ; A ::= x: x ;').validate() == []
+
+    def test_start_symbol_is_checked_independently(self):
+        pg = Polygen('S ::= a ; Other ::= _ ;')
+        assert pg.validate() == []
+        with pytest.raises(ValidationError, match='Epsilon-production: Other'):
+            pg.validate('Other')
+
+    def test_check_reports_warning_on_stderr(self, tmp_path):
+        grammar = tmp_path / 'epsilon.grm'
+        grammar.write_text('S ::= [a] ;', encoding='utf-8')
+        result = subprocess.run([sys.executable, str(Path(__file__).with_name('polygen.py')),
+                                 str(grammar), '--check'], capture_output=True, text=True)
+        assert result.returncode == 0
+        assert 'Warning level 1' in result.stderr
+        assert 'Potential epsilon-production: S' in result.stderr
+        assert 'Warning' not in result.stdout
+
     def test_epsilon_alternative(self, seeded):
         """Test epsilon come alternativa."""
         grammar = 'S ::= ball | _ ;'
@@ -954,4 +999,5 @@ class TestIntegration:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
 
