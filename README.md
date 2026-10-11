@@ -140,6 +140,10 @@ il ramo `a` termina, ma scegliere `A` avvia un sottociclo chiuso. Una
 ricorsione produttiva come `S ::= fine | ancora S ;` rimane valida.
 L'errore indica riga e colonna della dichiarazione coinvolta ed è
 segnalato anche da `--check`.
+Il controllo riguarda tutte le dichiarazioni, anche quelle non raggiunte
+dal simbolo iniziale: `S ::= a ; X ::= X ;` viene quindi rifiutata.
+Una grammatica che prima generava da `S` può ora fallire in validazione
+se contiene un ciclo inutilizzato.
 
 ## Sintassi delle grammatiche
 
@@ -399,3 +403,4 @@ Vedi la directory `examples/` per grammatiche di esempio:
 ## Credits
 
 Basato sulle specifiche di Polygen Meta Language di Alvise Spanò.
+
