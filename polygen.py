@@ -699,9 +699,45 @@ class Validator:
                 break
             terminating.update(newly_terminating)
 
-        for decl in reversed(self.declarations):
-            if id(decl) not in terminating:
-                raise ValidationError(f"Non-terminating recursion: {decl.name}", decl.line, decl.col)
+        nonterminating = [decl for decl in self.declarations if id(decl) not in terminating]
+        if not nonterminating:
+            return
+
+        edges = {
+            id(decl): set(self._references(decl.productions, self.scopes[id(decl)]))
+            for decl in nonterminating
+        }
+        for decl in nonterminating:
+            pending = list(edges[id(decl)])
+            seen = set()
+            while pending:
+                target = pending.pop()
+                if target == id(decl):
+                    raise ValidationError(f"Non-terminating recursion: {decl.name}", decl.line, decl.col)
+                if target not in seen:
+                    seen.add(target)
+                    pending.extend(edges.get(target, set()) - seen)
+
+        # A non-terminating declaration should always depend on a cycle.
+        decl = nonterminating[0]
+        raise ValidationError(f"Non-terminating recursion: {decl.name}", decl.line, decl.col)
+
+    def _references(self, productions: Productions, scope: Dict[str, Declaration]):
+        for production in productions.items:
+            for atom in production.sequence.atoms:
+                yield from self._atom_references(atom, scope)
+
+    def _atom_references(self, atom: ASTNode, scope: Dict[str, Declaration]):
+        if isinstance(atom, NonTerminal):
+            yield id(scope[atom.name])
+        elif isinstance(atom, SubProduction):
+            local_scope = {**scope, **{decl.name: decl for decl in atom.declarations}}
+            yield from self._references(atom.productions, local_scope)
+        elif isinstance(atom, Selection):
+            yield from self._atom_references(atom.atom, scope)
+        elif isinstance(atom, PositionalGroup):
+            for item in atom.atoms:
+                yield from self._atom_references(item, scope)
 
     def _productions_terminate(self, productions: Productions, scope: Dict[str, Declaration],
                                terminating: Set[int]) -> bool:
@@ -1473,3 +1509,4 @@ Fruit ::= an apple | a mango | an orange ;
 
 if __name__ == '__main__':
     main()
+
