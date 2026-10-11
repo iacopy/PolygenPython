@@ -1043,6 +1043,108 @@ class GeneratorError(Exception):
     pass
 
 
+class OutputAnalyzer:
+    """Find the possible text outcomes of a start symbol."""
+
+    def __init__(self, grammar: Grammar):
+        self.scopes = {}
+        self._collect_scopes(grammar.declarations, {})
+        self.top_level = {decl.name: decl for decl in grammar.declarations}
+        self.results = {}
+        self.configurations = {}
+
+    def _collect_scopes(self, declarations, outer):
+        scope = {**outer, **{decl.name: decl for decl in declarations}}
+        for decl in declarations:
+            self.scopes[id(decl)] = scope
+            for prod in decl.productions.items:
+                for atom in prod.sequence.atoms:
+                    self._collect_atom_scopes(atom, scope)
+
+    def _collect_atom_scopes(self, atom, scope):
+        if isinstance(atom, SubProduction):
+            self._collect_scopes(atom.declarations, scope)
+            local = {**scope, **{decl.name: decl for decl in atom.declarations}}
+            for prod in atom.productions.items:
+                for item in prod.sequence.atoms:
+                    self._collect_atom_scopes(item, local)
+        elif isinstance(atom, Selection):
+            self._collect_atom_scopes(atom.atom, scope)
+
+    def outcomes(self, start_symbol: str) -> Set[bool]:
+        start = self.top_level[start_symbol]
+        self._declaration(start, frozenset())
+        while True:
+            count = len(self.configurations)
+            changed = False
+            for key, (decl, labels) in list(self.configurations.items()):
+                found = self._productions(decl.productions, self.scopes[id(decl)], labels)
+                if not found <= self.results[key]:
+                    self.results[key].update(found)
+                    changed = True
+            if not changed and len(self.configurations) == count:
+                break
+        return {has_text for has_text, _ in self.results[(id(start), frozenset())]}
+
+    def _declaration(self, decl: Declaration, labels: frozenset):
+        key = (id(decl), labels)
+        if key not in self.results:
+            self.results[key] = set()
+            self.configurations[key] = (decl, labels)
+        return self.results[key]
+
+    def _productions(self, productions: Productions, scope, labels: frozenset):
+        valid = [prod for prod in productions.items
+                 if prod.sequence.label is None or not labels or prod.sequence.label in labels]
+        if not valid:
+            return {(False, frozenset())}  # Destructive selection
+        outcomes = set()
+        for prod in valid:
+            for has_text, emitted in self._sequence(prod.sequence, scope, labels):
+                outcomes.add((has_text, emitted | frozenset(prod.emitted_labels)))
+        return outcomes
+
+    def _sequence(self, sequence: Sequence, scope, labels: frozenset):
+        paths = {(False, frozenset(), labels)}
+        for atom in sequence.atoms:
+            next_paths = set()
+            for has_text, emitted, active in paths:
+                for atom_text, atom_labels in self._atom(atom, scope, active):
+                    next_paths.add((has_text or atom_text, emitted | atom_labels,
+                                    active | atom_labels))
+            paths = next_paths
+        return {(has_text, emitted) for has_text, emitted, _ in paths}
+
+    def _atom(self, atom: ASTNode, scope, labels: frozenset):
+        if isinstance(atom, Terminal):
+            return {(bool(atom.value.strip()), frozenset())}
+        if isinstance(atom, NonTerminal):
+            return self._declaration(scope[atom.name], labels)
+        if isinstance(atom, SubProduction):
+            local = {**scope, **{decl.name: decl for decl in atom.declarations}}
+            outcomes = set(self._productions(atom.productions, local, labels))
+            if atom.is_optional:
+                outcomes.add((False, frozenset()))
+            if atom.is_iterable:
+                first = set(outcomes)
+                frontier = set(first)
+                while frontier:
+                    combined = {(a or b, x | y) for a, x in frontier for b, y in first}
+                    frontier = combined - outcomes
+                    outcomes.update(frontier)
+            return outcomes
+        if isinstance(atom, Selection):
+            if atom.reset:
+                return self._atom(atom.atom, scope, frozenset())
+            if atom.labels:
+                outcomes = set()
+                for label, _ in atom.labels:
+                    outcomes.update(self._atom(atom.atom, scope, labels | {label}))
+                return outcomes
+            return self._atom(atom.atom, scope, labels)
+        return {(False, frozenset())}  # Epsilon and formatting markers
+
+
 @dataclass
 class Environment:
     """Scoped environment for symbol bindings."""
@@ -1369,6 +1471,7 @@ class Polygen:
         self.source = source
         self.base_path = base_path
         self.grammar = None
+        self.warnings = []
         self._parse()
 
     def _parse(self):
@@ -1388,9 +1491,22 @@ class Polygen:
         self.grammar = preprocessor.process(self.grammar)
 
     def validate(self, start_symbol: str = 'S'):
-        """Check that the requested starting symbol can be generated."""
-        if not any(decl.name == start_symbol for decl in self.grammar.declarations):
+        """Check the start symbol and report possible empty output."""
+        self.warnings = []
+        start = next((decl for decl in self.grammar.declarations
+                      if decl.name == start_symbol), None)
+        if start is None:
             raise ValidationError(f"Undefined start symbol: {start_symbol}")
+        outcomes = OutputAnalyzer(self.grammar).outcomes(start_symbol)
+        if True not in outcomes:
+            raise ValidationError(f"Epsilon-production: {start_symbol}",
+                                  start.line, start.col)
+        if False in outcomes:
+            self.warnings.append(
+                f"Warning level 1 at {start.line}:{start.col}: "
+                f"Potential epsilon-production: {start_symbol}"
+            )
+        return self.warnings
 
     def generate(self, start_symbol: str = 'S', max_recursion: int = 100) -> str:
         """
@@ -1470,6 +1586,8 @@ def main():
 
             if args.check:
                 pg.validate(args.start)
+                for warning in pg.warnings:
+                    print(warning, file=sys.stderr)
                 print("Grammar references and definitions are valid")
             elif args.info:
                 info = pg.info()
@@ -1478,6 +1596,9 @@ def main():
                 else:
                     print("(No info defined)", file=sys.stderr)
             else:
+                pg.validate(args.start)
+                for warning in pg.warnings:
+                    print(warning, file=sys.stderr)
                 for _ in range(args.count):
                     print(pg.generate(args.start))
 
@@ -1509,4 +1630,5 @@ Fruit ::= an apple | a mango | an orange ;
 
 if __name__ == '__main__':
     main()
+
 
