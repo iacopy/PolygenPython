@@ -476,6 +476,49 @@ class TestIteration:
 class TestRecursion:
     """Test della ricorsione."""
 
+    @pytest.mark.parametrize('grammar, symbol', [
+        ('S ::= S | A ; A ::= B ; B ::= S | A ;', 'S'),
+        ('S ::= a | A ;\nA ::= B ;\nB ::= A ;', 'A'),
+        ('S ::= (A ::= A ; A) ;', 'A'),
+        ('S ::= (A ::= A ; A) ; A ::= end ;', 'A'),
+        ('S ::= (A ::= end ; A) ; A ::= A ;', 'A'),
+        ('S ::= (A ::= B ; B ::= A ; A) ;', 'A'),
+    ])
+    def test_closed_recursion_is_rejected(self, grammar, symbol):
+        with pytest.raises(ValidationError, match=f'Non-terminating recursion: {symbol}'):
+            Polygen(grammar)
+
+    def test_closed_subcycle_reports_its_declaration(self):
+        with pytest.raises(ValidationError, match=r'2:1: Non-terminating recursion: A'):
+            Polygen('S ::= a | A ;\nA ::= B ;\nB ::= A ;')
+
+    def test_cycle_is_reported_before_its_dependent(self):
+        with pytest.raises(ValidationError, match=r'1:1: Non-terminating recursion: A'):
+            Polygen('A ::= A ;\nS ::= A ;')
+
+    def test_local_cycle_reports_local_position(self):
+        with pytest.raises(ValidationError, match=r'1:8: Non-terminating recursion: A'):
+            Polygen('S ::= (A ::= A ; A) ;')
+
+    @pytest.mark.parametrize('grammar', [
+        'S ::= a ; X ::= X ;',
+        'S ::= (X ::= X ; a) ;',
+    ])
+    def test_unused_cycles_are_rejected(self, grammar):
+        with pytest.raises(ValidationError, match='Non-terminating recursion: X'):
+            Polygen(grammar)
+
+    @pytest.mark.parametrize('grammar', [
+        'S ::= fine | ancora S ;',
+        'S ::= A ; A ::= fine | ancora A ;',
+        'S ::= [S] ;',
+        'S ::= (A ::= fine | ancora A ; A) ;',
+        'S ::= (A ::= local ; A) ; A ::= global | A ;',
+        'S ::= _ ;',
+    ])
+    def test_recursion_with_exit_is_valid(self, grammar):
+        Polygen(grammar)
+
     def test_basic_recursion(self, seeded):
         """Test ricorsione base."""
         grammar = '''
@@ -800,6 +843,16 @@ class TestErrors:
         assert result.returncode == 1
         assert result.stdout == ''
 
+    def test_check_rejects_nonterminating_generation(self, tmp_path):
+        grammar = tmp_path / 'cycle.grm'
+        grammar.write_text('S ::= a | A ;\nA ::= B ;\nB ::= A ;', encoding='utf-8')
+        command = [sys.executable, str(Path(__file__).with_name('polygen.py')), str(grammar)]
+        for args in (['--check'], ['-n', '1']):
+            result = subprocess.run(command + args, capture_output=True, text=True, timeout=5)
+            assert result.returncode == 1
+            assert 'Non-terminating recursion: A' in result.stderr
+            assert result.stdout == ''
+
     def test_lexer_error_illegal_char(self):
         """Test errore lessicale per carattere illegale."""
         grammar = 'S ::= hello § world ;'
@@ -821,6 +874,10 @@ class TestErrors:
         # L'errore viene sollevato durante il preprocessing (costruzione)
         with pytest.raises(GeneratorError, match="same size"):
             Polygen(grammar)
+
+    def test_mismatched_groups_take_precedence_over_cycle_check(self):
+        with pytest.raises(GeneratorError, match="same size"):
+            Polygen('S ::= S, a b,c,d ;')
 
 
 # =============================================================================
@@ -897,3 +954,4 @@ class TestIntegration:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
