@@ -497,6 +497,19 @@ class TestRecursion:
             Polygen('S ::= (A ::= A ; A) ;')
 
     @pytest.mark.parametrize('grammar', [
+        'S ::= a ; X ::= X ;',
+        'S ::= (X ::= X ; a) ;',
+    ])
+    def test_unreachable_cycle_is_rejected(self, grammar):
+        with pytest.raises(ValidationError, match='Non-terminating recursion: X'):
+            Polygen(grammar)
+
+    @pytest.mark.xfail(strict=True, reason='reports the last non-terminating declaration, not the cycle')
+    def test_error_points_to_the_cycle_not_its_dependents(self):
+        with pytest.raises(ValidationError, match=r'1:1: Non-terminating recursion: A'):
+            Polygen('A ::= A ;\nS ::= A ;')
+
+    @pytest.mark.parametrize('grammar', [
         'S ::= fine | ancora S ;',
         'S ::= A ; A ::= fine | ancora A ;',
         'S ::= [S] ;',
