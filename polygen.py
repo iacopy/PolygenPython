@@ -1472,6 +1472,7 @@ class Polygen:
         self.base_path = base_path
         self.grammar = None
         self.warnings = []
+        self._validation_results = {}
         self._parse()
 
     def _parse(self):
@@ -1492,7 +1493,8 @@ class Polygen:
 
     def validate(self, start_symbol: str = 'S'):
         """Check the start symbol and report possible empty output."""
-        self.warnings = []
+        if start_symbol in self._validation_results:
+            return self._validation_results[start_symbol]
         start = next((decl for decl in self.grammar.declarations
                       if decl.name == start_symbol), None)
         if start is None:
@@ -1501,12 +1503,15 @@ class Polygen:
         if True not in outcomes:
             raise ValidationError(f"Epsilon-production: {start_symbol}",
                                   start.line, start.col)
+        warnings = []
         if False in outcomes:
-            self.warnings.append(
+            warnings.append(
                 f"Warning level 1 at {start.line}:{start.col}: "
                 f"Potential epsilon-production: {start_symbol}"
             )
-        return self.warnings
+            self.warnings.extend(warnings)
+        self._validation_results[start_symbol] = warnings
+        return warnings
 
     def generate(self, start_symbol: str = 'S', max_recursion: int = 100) -> str:
         """
@@ -1630,5 +1635,3 @@ Fruit ::= an apple | a mango | an orange ;
 
 if __name__ == '__main__':
     main()
-
-

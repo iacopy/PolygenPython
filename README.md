@@ -154,6 +154,7 @@ livello 1, disponibile anche in `pg.warnings`. Nella CLI i warning
 sono scritti su stderr, anche con `--check`, senza contaminare
 l'output generato. L'analisi considera anche riferimenti, scope locali,
 selezioni di etichette e ricorsioni.
+Un terminale composto solo da spazi, come `S ::= " " ;`, è considerato vuoto.
 
 ## Sintassi delle grammatiche
 
@@ -413,5 +414,3 @@ Vedi la directory `examples/` per grammatiche di esempio:
 ## Credits
 
 Basato sulle specifiche di Polygen Meta Language di Alvise Spanò.
-
-

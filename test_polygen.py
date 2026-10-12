@@ -157,6 +157,9 @@ class TestEpsilon:
 
     @pytest.mark.parametrize('grammar', [
         'S ::= _ ;',
+        'S ::= " " ;',
+        'S ::= (_)+ ;',
+        'S ::= S | _ ;',
         'S ::= A ; A ::= A ^ | _ ;',
         'S ::= A.z ; A ::= x: x | y: y ;',
         'S ::= (A ::= _ ; A) ;',
@@ -172,6 +175,7 @@ class TestEpsilon:
         'S ::= A ; A ::= _ | a ;',
         'S ::= a | A ; A ::= _ ;',
         'S ::= (a | _) ;',
+        'S ::= (a | _)+ ;',
     ])
     def test_potentially_empty_start_warns(self, grammar):
         pg = Polygen(grammar)
@@ -189,6 +193,43 @@ class TestEpsilon:
         assert pg.validate() == []
         with pytest.raises(ValidationError, match='Epsilon-production: Other'):
             pg.validate('Other')
+
+    def test_validation_is_cached_per_start_symbol(self, monkeypatch):
+        from polygen import OutputAnalyzer
+
+        calls = []
+        original = OutputAnalyzer.outcomes
+
+        def counted_outcomes(analyzer, start_symbol):
+            calls.append(start_symbol)
+            return original(analyzer, start_symbol)
+
+        monkeypatch.setattr(OutputAnalyzer, 'outcomes', counted_outcomes)
+        pg = Polygen('S ::= a | _ ; I ::= info ;')
+        pg.generate()
+        pg.generate()
+        pg.validate()
+        assert pg.info() == 'info'
+        assert calls == ['S', 'I']
+        assert len(pg.warnings) == 1
+        assert 'Potential epsilon-production: S' in pg.warnings[0]
+
+    @pytest.mark.parametrize('grammar,expected_code', [
+        ('S ::= _ ;', 1),
+        ('S ::= (_)+ ;', 1),
+        ('S ::= S | _ ;', 1),
+        ('S ::= (a | _)+ ;', 0),
+    ])
+    def test_cli_generation_checks_epsilon(self, tmp_path, grammar, expected_code):
+        source = tmp_path / 'epsilon.grm'
+        source.write_text(grammar, encoding='utf-8')
+        result = subprocess.run([sys.executable, str(Path(__file__).with_name('polygen.py')),
+                                 str(source)], capture_output=True, text=True)
+        assert result.returncode == expected_code
+        if expected_code:
+            assert 'Epsilon-production: S' in result.stderr
+        else:
+            assert 'Potential epsilon-production: S' in result.stderr
 
     def test_check_reports_warning_on_stderr(self, tmp_path):
         grammar = tmp_path / 'epsilon.grm'
@@ -999,5 +1040,3 @@ class TestIntegration:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
-
-
