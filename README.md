@@ -43,6 +43,7 @@ Questa implementazione supporta tutte le feature principali del linguaggio PML (
 - ✅ Definizioni duplicate nello stesso scope (lo shadowing locale è consentito)
 - ✅ Unfolding ricorsivi, anche attraverso più simboli o scope locali
 - ✅ Cicli di generazione senza via d'uscita, anche in sottocicli e scope locali
+- ✅ Grammatica sempre vuota e avviso per risultati potenzialmente vuoti
 - ✅ Posizione riga:colonna per gli errori di validazione
 - ✅ Controllo del simbolo iniziale prima della generazione
 
@@ -50,14 +51,10 @@ Questa implementazione supporta tutte le feature principali del linguaggio PML (
 
 Le seguenti feature di **validazione statica** (Sezione 4 della spec) non sono implementate:
 
-### Errori non rilevati
-
-- Epsilon-productions che rendono la grammatica inutile
-
 ### Warning non implementati
 
 - Livello 0: (nessuno attualmente)
-- Livello 1: undefined `I` symbol, potential epsilon-productions, destructive selection
+- Livello 1: undefined `I` symbol, destructive selection
 - Livello 2: useless permutation, useless unfolding
 - Livello 3: unfolding a suspended symbol
 
@@ -125,6 +122,7 @@ print(pg.generate())  # "hello" o "goodbye"
 # Rifiuta anche i cicli di unfolding e generazione senza via d'uscita.
 # Si può verificare anche il simbolo iniziale senza generare testo:
 pg.validate()
+# I warning non bloccanti sono disponibili in pg.warnings.
 
 # Da file
 pg = Polygen.from_file('mia_grammatica.grm')
@@ -147,6 +145,16 @@ Il controllo riguarda tutte le dichiarazioni, anche quelle non raggiunte
 dal simbolo iniziale: `S ::= a ; X ::= X ;` viene quindi rifiutata.
 Una grammatica che prima generava da `S` può ora fallire in validazione
 se contiene un ciclo inutilizzato.
+
+La validazione del simbolo iniziale richiesto rifiuta una grammatica che
+può produrre solo testo vuoto: `S ::= _ ;` è un errore. Se il testo vuoto
+è solo una possibilità, come in `S ::= [a] ;` o `S ::= a | _ ;`,
+la grammatica resta valida e `validate()` restituisce un warning di
+livello 1, disponibile anche in `pg.warnings`. Nella CLI i warning
+sono scritti su stderr, anche con `--check`, senza contaminare
+l'output generato. L'analisi considera anche riferimenti, scope locali,
+selezioni di etichette e ricorsioni.
+Un terminale composto solo da spazi, come `S ::= " " ;`, è considerato vuoto.
 
 ## Sintassi delle grammatiche
 
@@ -406,4 +414,3 @@ Vedi la directory `examples/` per grammatiche di esempio:
 ## Credits
 
 Basato sulle specifiche di Polygen Meta Language di Alvise Spanò.
-
