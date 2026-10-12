@@ -104,6 +104,9 @@ python polygen.py mia_grammatica.grm -S 42
 
 # Parti da un simbolo diverso da S
 python polygen.py mia_grammatica.grm -s MioSimbolo
+
+# Esporta una grammatica autonoma, espandendo soltanto gli include
+python polygen.py mia_grammatica.grm --expand-includes -o completa.grm
 ```
 
 ### Come libreria Python
@@ -392,11 +395,36 @@ S ::= il Animale Colore ;
 ```
 
 Ogni file viene incluso al massimo una volta: le inclusioni ripetute e i
-cicli vengono ignorati.
+cicli vengono ignorati, anche quando tornano al file principale.
+Le direttive dentro commenti e stringhe quotate restano testo letterale.
+
+Per raccogliere una grammatica modulare in un file unico:
+
+```bash
+python polygen.py main.grm --expand-includes -o completa.grm
+# Senza -o, il sorgente espanso viene scritto su stdout:
+python polygen.py main.grm --expand-includes
+# Per autorizzare esplicitamente la sostituzione di un file esistente:
+python polygen.py main.grm --expand-includes -o completa.grm --force
+```
+
+L'esportazione conserva testo, ordine e commenti, sostituendo solo le
+direttive attive. Non valida il PML e non applica unfolding, selezione o
+generazione. Il file risultante può essere usato senza i file inclusi.
+La modalità richiede un file di input ed è incompatibile con `--check`,
+`--info`, `--count`, `--start` e `--seed`, anche con i loro valori predefiniti.
+`--output` e `--force` sono disponibili solo con `--expand-includes`;
+`--force` richiede una destinazione.
+
+Una destinazione esistente, incluso il file principale o un file incluso,
+non viene sostituita senza `--force`. L'espansione viene completata prima
+di pubblicare l'output: un errore di lettura o di include non lascia file
+parziali e viene segnalato su stderr con un exit code diverso da zero.
 
 Limite noto: l'inclusione avviene sul testo prima dell'analisi lessicale,
 quindi i numeri di riga degli errori di sintassi successivi a un
 `@include` si riferiscono al testo già espanso, non al file originale.
+Lo stesso limite vale per gli errori rilevati caricando il file esportato.
 
 Nota di sicurezza: `@include` accetta path assoluti e `..`, quindi può
 leggere qualsiasi file accessibile al processo. Non caricare grammatiche
