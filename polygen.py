@@ -21,6 +21,7 @@ This module implements the core features of PML (Polygen Meta Language):
 import re
 import os
 import random
+import tempfile
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Tuple, Set
 from enum import Enum, auto
@@ -1409,7 +1410,9 @@ class Generator:
 # INCLUDE PREPROCESSING
 # =============================================================================
 
-INCLUDE_PATTERN = re.compile(r'^[ \t]*@include[ \t]+"([^"\n]+)"[ \t]*$', re.MULTILINE)
+INCLUDE_PATTERN = re.compile(r'^[ \t]*@include[ \t]+"([^"\r\n]+)"[ \t]*\r?$', re.MULTILINE)
+INCLUDE_TOKENS = re.compile(r'\(\*.*?(?:\*\)|\Z)|"(?:\\.|[^"\\])*(?:"|\Z)|@include',
+                            re.DOTALL)
 
 def preprocess_includes(source: str, base_path: Optional[str] = None,
                         included: Optional[Set[str]] = None) -> str:
@@ -1424,7 +1427,7 @@ def preprocess_includes(source: str, base_path: Optional[str] = None,
     Args:
         source: The grammar source code
         base_path: Base directory for resolving relative paths
-        included: Absolute paths of the files already included
+        included: Canonical paths of the files already included
 
     Returns:
         The source with all includes expanded
@@ -1435,22 +1438,40 @@ def preprocess_includes(source: str, base_path: Optional[str] = None,
     def replace_include(match):
         filename = match.group(1)
         filepath = os.path.join(base_path or '', filename)
-        abs_path = os.path.abspath(filepath)
+        abs_path = os.path.realpath(filepath)
 
         if abs_path in included:
             return ''
         included.add(abs_path)
 
         try:
-            with open(filepath, 'r', encoding='utf-8') as f:
+            with open(filepath, 'r', encoding='utf-8', newline='') as f:
                 included_source = f.read()
         except FileNotFoundError:
             line = source.count('\n', 0, match.start()) + 1
             raise LexerError(f"Include file not found: {filename}", line, 1)
 
-        return preprocess_includes(included_source, os.path.dirname(abs_path), included)
+        return preprocess_includes(included_source, os.path.dirname(os.path.abspath(filepath)), included)
 
-    return INCLUDE_PATTERN.sub(replace_include, source)
+    parts = []
+    end = 0
+    for token in INCLUDE_TOKENS.finditer(source):
+        if token.start() < end or token.group() != '@include':
+            continue
+        line_start = source.rfind('\n', 0, token.start()) + 1
+        line_end = source.find('\n', token.end())
+        if line_end == -1:
+            line_end = len(source)
+        match = INCLUDE_PATTERN.fullmatch(source, line_start, line_end)
+        if match is None:
+            line = source.count('\n', 0, token.start()) + 1
+            raise LexerError('Include directive must be on its own line with a quoted path',
+                             line, token.start() - line_start + 1)
+        parts.append(source[end:line_start])
+        parts.append(replace_include(match))
+        end = line_end
+    parts.append(source[end:])
+    return ''.join(parts)
 
 
 # =============================================================================
@@ -1551,9 +1572,10 @@ class Polygen:
         Returns:
             A Polygen instance
         """
-        with open(path, 'r', encoding='utf-8') as f:
+        with open(path, 'r', encoding='utf-8', newline='') as f:
             source = f.read()
         base_path = os.path.dirname(os.path.abspath(path))
+        source = preprocess_includes(source, base_path, {os.path.realpath(path)})
         return cls(source, base_path)
 
 
@@ -1566,9 +1588,9 @@ def main():
         description='Polygen - Random text generator from grammars'
     )
     parser.add_argument('file', nargs='?', help='Grammar file to load')
-    parser.add_argument('-n', '--count', type=int, default=1,
+    parser.add_argument('-n', '--count', type=int,
                        help='Number of sentences to generate')
-    parser.add_argument('-s', '--start', default='S',
+    parser.add_argument('-s', '--start',
                        help='Starting symbol (default: S)')
     parser.add_argument('-i', '--info', action='store_true',
                        help='Show grammar info')
@@ -1576,8 +1598,25 @@ def main():
                        help='Validate the grammar without generating text')
     parser.add_argument('-S', '--seed', type=int,
                        help='Random seed for reproducibility')
+    parser.add_argument('--expand-includes', action='store_true',
+                       help='Export the grammar with includes expanded, without generating text')
+    parser.add_argument('-o', '--output', help='Destination for --expand-includes (default: stdout)')
+    parser.add_argument('--force', action='store_true', help='Allow overwriting the output file')
 
     args = parser.parse_args()
+
+    if args.expand_includes:
+        if not args.file:
+            parser.error('--expand-includes requires a grammar file')
+        if (args.check or args.info or args.count is not None
+                or args.start is not None or args.seed is not None):
+            parser.error('--expand-includes is incompatible with --check, --info, --count, --start and --seed')
+    elif args.output is not None or args.force:
+        parser.error('--output and --force require --expand-includes')
+    if args.force and args.output is None:
+        parser.error('--force requires --output')
+    args.count = args.count if args.count is not None else 1
+    args.start = args.start if args.start is not None else 'S'
 
     if args.check and not args.file:
         parser.error('--check requires a grammar file')
@@ -1587,6 +1626,31 @@ def main():
 
     if args.file:
         try:
+            if args.expand_includes:
+                with open(args.file, encoding='utf-8', newline='') as f:
+                    source = f.read()
+                expanded = preprocess_includes(
+                    source, os.path.dirname(os.path.abspath(args.file)),
+                    {os.path.realpath(args.file)})
+                if args.output is None:
+                    sys.stdout.write(expanded)
+                else:
+                    # Publish only a complete file; link refuses existing destinations.
+                    temporary = None
+                    try:
+                        with tempfile.NamedTemporaryFile(
+                                mode='w', encoding='utf-8', newline='', delete=False,
+                                dir=os.path.dirname(os.path.abspath(args.output))) as f:
+                            temporary = f.name
+                            f.write(expanded)
+                        if args.force:
+                            os.replace(temporary, args.output)
+                        else:
+                            os.link(temporary, args.output)
+                    finally:
+                        if temporary is not None and os.path.exists(temporary):
+                            os.unlink(temporary)
+                return
             pg = Polygen.from_file(args.file)
 
             if args.check:
@@ -1610,8 +1674,11 @@ def main():
         except (LexerError, ParserError, ValidationError, GeneratorError) as e:
             print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
-        except FileNotFoundError:
-            print(f"Error: File not found: {args.file}", file=sys.stderr)
+        except FileExistsError:
+            print(f"Error: Output already exists: {args.output}; use --force to overwrite", file=sys.stderr)
+            sys.exit(1)
+        except (OSError, UnicodeError) as e:
+            print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
     else:
         # Interactive demo
